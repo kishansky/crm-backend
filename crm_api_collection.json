@@ -1,0 +1,374 @@
+{
+  "info": {
+    "name": "CRM Laravel API",
+    "_postman_id": "crm-laravel-api",
+    "description": "Postman collection for CRM Backend",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://127.0.0.1:8000/api"
+    },
+    {
+      "key": "token",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Admin Login",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"admin@test.com\",\n  \"password\": \"password\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/login",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "login"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Sales Team",
+      "item": [
+        {
+          "name": "Create Sales Person",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n \"sales_person_id\":\"SP001\",\n \"name\":\"Rahul\",\n \"email\":\"rahul@test.com\",\n \"is_active\":true\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/sales-team",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "sales-team"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get All Sales Team",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/sales-team",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "sales-team"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Update Sales Person",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n \"name\":\"Rahul Sharma\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/sales-team/SP001",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "sales-team",
+                "SP001"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete Sales Person",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/sales-team/SP001",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "sales-team",
+                "SP001"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Leads",
+      "item": [
+        {
+          "name": "Create Lead",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n\"lead_id\":\"L001\",\n\"timestamp\":\"2026-03-16 10:30:00\",\n\"source\":\"Website\",\n\"company_name\":\"ABC Pvt Ltd\",\n\"contact_person\":\"Rahul\",\n\"phone_number\":\"9876543210\",\n\"email\":\"rahul@test.com\",\n\"enquiry_description\":\"CRM enquiry\",\n\"assigned_to\":\"SP001\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/leads",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "leads"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get All Leads",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/leads",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "leads"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Update Lead",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n\"company_name\":\"XYZ Pvt Ltd\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/leads/L001",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "leads",
+                "L001"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete Lead",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/leads/L001",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "leads",
+                "L001"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Status History",
+      "item": [
+        {
+          "name": "Create Status",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n\"lead_id\":\"L001\",\n\"status_type\":\"Follow Up\",\n\"remark\":\"Client asked demo\",\n\"updated_at\":\"2026-03-16 12:00:00\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/status-history",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "status-history"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Status History",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/status-history",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "status-history"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Performance Metrics",
+      "item": [
+        {
+          "name": "Create Performance",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n\"sales_person_id\":\"SP001\",\n\"report_date\":\"2026-03-16\",\n\"total_leads\":10,\n\"total_attended\":8,\n\"total_calls\":20,\n\"closed_ordered\":2\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/performance",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "performance"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Performance",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/performance",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "performance"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
