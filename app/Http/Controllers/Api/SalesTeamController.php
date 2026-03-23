@@ -15,6 +15,15 @@ class SalesTeamController extends Controller
 
     public function store(Request $request)
     {
+        // ✅ Validation
+        $request->validate([
+            'sales_person_id' => 'required|unique:sales_team,sales_person_id',
+            'name' => 'required|string',
+            'email' => 'required|email|unique:sales_team,email',
+            'password' => 'required|min:6',
+            'is_active' => 'nullable|boolean'
+        ]);
+
         $data = SalesTeam::create($request->all());
 
         return response()->json([
@@ -28,24 +37,37 @@ class SalesTeamController extends Controller
         return response()->json(SalesTeam::findOrFail($id));
     }
 
-   public function update(Request $request, $id)
-{
-    $data = SalesTeam::findOrFail($id);
+    public function update(Request $request, $id)
+    {
+        $data = SalesTeam::findOrFail($id);
 
-    $input = $request->all();
+        // ✅ Validation (ignore current record)
+        $request->validate([
+            'name' => 'sometimes|string',
+            'email' => 'sometimes|email|unique:sales_team,email,' . $id . ',sales_person_id',
+            'password' => 'nullable|min:6',
+            'is_active' => 'nullable|boolean'
+        ]);
 
-    // ✅ FIX BOOLEAN
-    if (isset($input['is_active'])) {
-        $input['is_active'] = filter_var($input['is_active'], FILTER_VALIDATE_BOOLEAN);
+        $input = $request->all();
+
+        // ✅ Fix boolean
+        if (isset($input['is_active'])) {
+            $input['is_active'] = filter_var($input['is_active'], FILTER_VALIDATE_BOOLEAN);
+        }
+
+        // ❗ Remove password if empty (avoid hashing null)
+        if (empty($input['password'])) {
+            unset($input['password']);
+        }
+
+        $data->update($input);
+
+        return response()->json([
+            'message' => 'Updated',
+            'data' => $data
+        ]);
     }
-
-    $data->update($input);
-
-    return response()->json([
-        'message' => 'Updated',
-        'data' => $data
-    ]);
-}
 
     public function destroy($id)
     {
