@@ -13,6 +13,7 @@ use Illuminate\Support\Facades\DB;
 use PhpOffice\PhpSpreadsheet\Spreadsheet;
 use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
 use PhpOffice\PhpSpreadsheet\Cell\DataType;
+use PhpOffice\PhpSpreadsheet\Cell\Coordinate;
 
 class LeadController extends Controller
 {
@@ -20,21 +21,57 @@ class LeadController extends Controller
     public function index(Request $request)
     {
         $perPage = $request->per_page ?? 10;
+        $user = $request->user();
 
-        $user = $request->user(); // 🔑 current logged in user
+        // ✅ ONLY DEFINE QUERY ONCE
+        $query = Lead::with(['salesPerson', 'latestStatus'])->latest();
 
-        $query = Lead::with(['salesPerson', 'statusHistory'])->latest();
-
-        // ✅ If Sales Team → only their leads
+        // ✅ ROLE FILTER
         if ($user instanceof SalesTeam) {
             $query->where('assigned_to', $user->sales_person_id);
+        }
+
+        // ✅ SEARCH
+        if ($request->search && strlen($request->search) >= 3) {
+            $search = $request->search;
+
+            $query->where(function ($q) use ($search) {
+                $q->where('company_name', 'like', "%$search%")
+                    ->orWhere('contact_person', 'like', "%$search%")
+                    ->orWhere('phone_number', 'like', "%$search%")
+                    ->orWhere('email', 'like', "%$search%");
+            });
+        }
+
+        // ✅ SOURCE FILTER
+        if ($request->source) {
+            $query->where('source', $request->source);
+        }
+
+        // ✅ SALES FILTER (admin only)
+        if ($request->assigned_to && !($user instanceof SalesTeam)) {
+            $query->where('assigned_to', $request->assigned_to);
+        }
+
+        // ✅ DATE FILTER
+        if ($request->start_date && $request->end_date) {
+            $query->whereBetween('created_at', [
+                $request->start_date,
+                $request->end_date
+            ]);
+        }
+
+        // ✅ STATUS FILTER (LATEST ONLY)
+        if ($request->status) {
+            $query->whereHas('latestStatus', function ($q) use ($request) {
+                $q->where('status_type', $request->status);
+            });
         }
 
         $leads = $query->paginate($perPage);
 
         return response()->json($leads);
     }
-
     // ✅ STORE
     public function store(Request $request)
     {
@@ -118,8 +155,6 @@ class LeadController extends Controller
         ]);
     }
 
-
-
     public function importExcel(Request $request)
     {
         $user = $request->user();
@@ -196,112 +231,192 @@ class LeadController extends Controller
         ]);
     }
 
-public function exportExcel(Request $request)
-{
-    $user = $request->user();
+    public function exportExcel(Request $request)
+    {
+        $user = $request->user();
 
-    if ($user instanceof \App\Models\SalesTeam) {
-        return response()->json([
-            'message' => 'Unauthorized (Admin only)'
-        ], 403);
-    }
-
-    $columns = $request->input('columns', []);
-    $leadIds = $request->input('lead_ids', []);
-    $assignedTo = $request->input('assigned_to');
-    $startDate = $request->input('start_date');
-    $endDate = $request->input('end_date');
-
-    if (empty($columns)) {
-        $columns = [
-            'company_name',
-            'contact_person',
-            'phone_number',
-            'email',
-            'source',
-            'assigned_to',
-            'latest_status'
-        ];
-    }
-
-    $query = Lead::with(['salesPerson', 'statusHistory']);
-
-    if (!empty($leadIds)) {
-        $query->whereIn('lead_id', $leadIds);
-    }
-
-    if ($assignedTo) {
-        $query->where('assigned_to', $assignedTo);
-    }
-
-    if ($startDate && $endDate) {
-        $query->whereBetween('created_at', [$startDate, $endDate]);
-    }
-
-    $leads = $query->get();
-    $count = $leads->count();
-
-    $spreadsheet = new Spreadsheet();
-    $sheet = $spreadsheet->getActiveSheet();
-
-    // ✅ Header
-    $sheet->fromArray($columns, null, 'A1');
-
-    $rowNumber = 2;
-
-    foreach ($leads as $lead) {
-
-        $latestStatus = $lead->statusHistory
-            ->sortByDesc('created_at')
-            ->first();
-
-        $colIndex = 0;
-
-        foreach ($columns as $col) {
-
-            // 🔤 Convert index → column letter
-            $columnLetter = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($colIndex + 1);
-
-            switch ($col) {
-
-                case 'assigned_to':
-                    $value = $lead->salesPerson->name ?? '';
-                    break;
-
-                case 'latest_status':
-                    $value = $latestStatus->status_type ?? '';
-                    break;
-
-                case 'phone_number':
-                    $value = (string) $lead->phone_number;
-                    break;
-
-                default:
-                    $value = $lead->$col ?? '';
-            }
-
-            // ✅ Force TEXT (fix scientific notation)
-            $sheet->setCellValueExplicit(
-                $columnLetter . $rowNumber,
-                (string)$value,
-                DataType::TYPE_STRING
-            );
-
-            $colIndex++;
+        if ($user instanceof SalesTeam) {
+            return response()->json([
+                'message' => 'Unauthorized (Admin only)'
+            ], 403);
         }
 
-        $rowNumber++;
+        $columns     = $request->input('columns', []);
+        $leadIds     = $request->input('lead_ids', []);
+        $assignedTo  = $request->input('assigned_to');
+        $startDate   = $request->input('start_date');
+        $endDate     = $request->input('end_date');
+        $limit       = $request->input('limit');
+
+        // ✅ Default columns
+        if (empty($columns)) {
+            $columns = [
+                'company_name',
+                'contact_person',
+                'phone_number',
+                'email',
+                'source',
+                'assigned_to',
+                'latest_status'
+            ];
+        }
+
+        // ✅ Base query
+        $query = Lead::with(['salesPerson', 'statusHistory']);
+
+        if (!empty($leadIds)) {
+            $query->whereIn('lead_id', $leadIds);
+        }
+
+        if ($assignedTo) {
+            $query->where('assigned_to', $assignedTo);
+        }
+
+        if ($startDate && $endDate) {
+            $query->whereBetween('created_at', [$startDate, $endDate]);
+        }
+
+        // ✅ IMPORTANT: always define order (latest first)
+        $query->latest(); // same as orderBy('created_at', 'desc')
+
+        // ✅ Total before limit
+        $totalRecords = $query->count();
+
+        // ✅ Apply limit ONLY once
+        if (!is_null($limit) && $limit !== '' && $limit > 0) {
+            $query->limit((int) $limit);
+        }
+
+        $leads = $query->get();
+        $exportedCount = $leads->count();
+
+        // ✅ Create Excel
+        $spreadsheet = new Spreadsheet();
+        $sheet = $spreadsheet->getActiveSheet();
+
+        // ✅ Header
+        $sheet->fromArray($columns, null, 'A1');
+
+        $rowNumber = 2;
+
+        foreach ($leads as $lead) {
+
+            $latestStatus = $lead->statusHistory
+                ->sortByDesc('created_at')
+                ->first();
+
+            $colIndex = 0;
+
+            foreach ($columns as $col) {
+
+                $columnLetter = Coordinate::stringFromColumnIndex($colIndex + 1);
+
+                switch ($col) {
+
+                    case 'assigned_to':
+                        $value = $lead->salesPerson->name ?? '';
+                        break;
+
+                    case 'latest_status':
+                        $value = $latestStatus->status_type ?? '';
+                        break;
+
+                    case 'phone_number':
+                        $value = (string) $lead->phone_number;
+                        break;
+
+                    default:
+                        $value = $lead->$col ?? '';
+                }
+
+                $sheet->setCellValueExplicit(
+                    $columnLetter . $rowNumber,
+                    (string)$value,
+                    DataType::TYPE_STRING
+                );
+
+                $colIndex++;
+            }
+
+            $rowNumber++;
+        }
+
+        // ✅ Save file
+        $fileName = 'leads_export_' . time() . '.xlsx';
+        $filePath = storage_path("app/public/$fileName");
+
+        $writer = new Xlsx($spreadsheet);
+        $writer->save($filePath);
+
+        // ✅ Response
+        $response = response()->download($filePath)->deleteFileAfterSend(true);
+
+        $response->headers->set('X-Total-Count', $totalRecords);
+        $response->headers->set('X-Exported-Count', $exportedCount);
+
+        return $response;
     }
 
-    $fileName = 'leads_export_' . time() . '.xlsx';
-    $filePath = storage_path("app/public/$fileName");
+    public function bulkDelete(Request $request)
+    {
+        $user = $request->user();
 
-    $writer = new Xlsx($spreadsheet);
-    $writer->save($filePath);
+        // ❌ Only admin
+        if ($user instanceof SalesTeam) {
+            return response()->json([
+                'message' => 'Unauthorized (Admin only)'
+            ], 403);
+        }
 
-    $response = response()->download($filePath)->deleteFileAfterSend(true);
-    $response->headers->set('X-Total-Count', $count);
+        $request->validate([
+            'lead_ids' => 'required|array'
+        ]);
 
-    return $response;
-}
+        Lead::whereIn('lead_id', $request->lead_ids)->delete();
+
+        return response()->json([
+            'message' => 'Leads deleted successfully 🗑️'
+        ]);
+    }
+
+    public function dashboardStats(Request $request)
+    {
+        $user = $request->user();
+
+        $query = Lead::query();
+
+        // ✅ Sales: only own leads
+        if ($user instanceof SalesTeam) {
+            $query->where('assigned_to', $user->sales_person_id);
+        }
+
+        // ✅ Total Leads
+        $totalLeads = (clone $query)->count();
+
+        // ✅ Today Leads
+        $todayLeads = (clone $query)
+            ->whereDate('created_at', now()->toDateString())
+            ->count();
+
+        // ✅ Interested Leads (latest status)
+        $interested = (clone $query)
+            ->whereHas('latestStatus', function ($q) {
+                $q->where('status_type', 'Interested');
+            })
+            ->count();
+
+        // ✅ Closed Ordered
+        $closed = (clone $query)
+            ->whereHas('latestStatus', function ($q) {
+                $q->where('status_type', 'Closed-Ordered');
+            })
+            ->count();
+
+        return response()->json([
+            'total_leads' => $totalLeads,
+            'today_leads' => $todayLeads,
+            'interested' => $interested,
+            'closed' => $closed,
+        ]);
+    }
 }

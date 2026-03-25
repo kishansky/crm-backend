@@ -27,11 +27,17 @@ class Lead extends Model
 
     public function salesPerson()
     {
-        return $this->belongsTo(SalesTeam::class,'assigned_to');
+        return $this->belongsTo(SalesTeam::class, 'assigned_to');
     }
 
     public function statusHistory()
     {
-        return $this->hasMany(StatusHistory::class,'lead_id');
+        return $this->hasMany(StatusHistory::class, 'lead_id');
+    }
+
+    public function latestStatus()
+    {
+        return $this->hasOne(StatusHistory::class, 'lead_id', 'lead_id')
+            ->latestOfMany('history_id');
     }
 }

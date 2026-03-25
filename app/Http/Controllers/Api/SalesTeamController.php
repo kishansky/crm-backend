@@ -8,10 +8,32 @@ use App\Models\SalesTeam;
 
 class SalesTeamController extends Controller
 {
-    public function index()
-    {
-        return response()->json(SalesTeam::latest()->get());
+    public function index(Request $request)
+{
+    $perPage = $request->per_page ?? 10;
+
+    $query = SalesTeam::latest();
+
+    // ✅ SEARCH (name + email)
+    if ($request->search && strlen($request->search) >= 3) {
+        $search = $request->search;
+
+        $query->where(function ($q) use ($search) {
+            $q->where('name', 'like', "%$search%")
+              ->orWhere('email', 'like', "%$search%");
+        });
     }
+
+    // ✅ FILTER: ACTIVE / INACTIVE
+    if (!is_null($request->is_active)) {
+        $query->where('is_active', $request->is_active);
+    }
+
+    // ✅ PAGINATION
+    $sales = $query->paginate($perPage);
+
+    return response()->json($sales);
+}
 
     public function store(Request $request)
     {
