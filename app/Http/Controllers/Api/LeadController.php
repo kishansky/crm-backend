@@ -10,6 +10,7 @@ use App\Models\User;
 use App\Models\SalesTeam;
 use PhpOffice\PhpSpreadsheet\IOFactory;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use PhpOffice\PhpSpreadsheet\Spreadsheet;
 use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
 use PhpOffice\PhpSpreadsheet\Cell\DataType;
@@ -177,24 +178,30 @@ class LeadController extends Controller
         $sheet = $spreadsheet->getActiveSheet();
         $rows = $sheet->toArray();
 
+        $skipped = 0;
+
         foreach ($rows as $index => $row) {
 
             if ($index === 0) continue;
 
-            // ✅ skip empty rows
-            if (empty($row[0])) continue;
+            // normalize values
+            $contact = trim($row[1] ?? '');
+            $phone   = trim($row[2] ?? '');
+
+            // ✅ skip if BOTH are empty
+            if ($contact === '' || $phone === '') {
+                $skipped++;
+                continue;
+            }
 
             DB::table('leads_master')->insert([
-                'lead_id' => 'L' . time() . rand(100, 999),
+                'lead_id' => 'L' . Str::random(10),
                 'company_name' => $row[0] ?? null,
-                'contact_person' => $row[1] ?? null,
-                'phone_number' => $row[2] ?? null,
+                'contact_person' => $contact,
+                'phone_number' => $phone,
                 'email' => $row[3] ?? null,
                 'source' => $row[4] ?? null,
-
-                // ✅ NULL SAFE
                 'assigned_to' => $assignedTo,
-
                 'enquiry_description' => $row[5] ?? null,
                 'timestamp' => now(),
                 'created_at' => now(),
@@ -203,7 +210,9 @@ class LeadController extends Controller
         }
 
         return response()->json([
-            'message' => 'Excel imported successfully 🚀'
+            'message' => $skipped > 0
+                ? "Imported successfully (Skipped: $skipped rows)"
+                : "Imported successfully"
         ]);
     }
 
@@ -251,12 +260,11 @@ class LeadController extends Controller
         // ✅ Default columns
         if (empty($columns)) {
             $columns = [
-                'company_name',
+                'company',
                 'contact_person',
-                'phone_number',
+                'phone',
                 'email',
                 'source',
-                'assigned_to',
                 'latest_status'
             ];
         }
@@ -301,9 +309,7 @@ class LeadController extends Controller
 
         foreach ($leads as $lead) {
 
-            $latestStatus = $lead->statusHistory
-                ->sortByDesc('created_at')
-                ->first();
+            $latestStatus = $lead->latestStatus ?? null;
 
             $colIndex = 0;
 
@@ -311,27 +317,51 @@ class LeadController extends Controller
 
                 $columnLetter = Coordinate::stringFromColumnIndex($colIndex + 1);
 
+                // ✅ default blank
+                $value = '';
+
                 switch ($col) {
 
-                    case 'assigned_to':
-                        $value = $lead->salesPerson->name ?? '';
+                    case 'company':
+                        $value = $lead->company_name ?? '';
+                        break;
+
+                    case 'contact_person':
+                        $value = $lead->contact_person ?? '';
+                        break;
+
+                    case 'phone':
+                        // ✅ ensure always phone only (not email)
+                        $value = filter_var($lead->phone_number, FILTER_VALIDATE_EMAIL)
+                            ? ''
+                            : ($lead->phone_number ?? '');
+                        break;
+
+                    case 'email':
+                        // ✅ ensure always email only
+                        $value = filter_var($lead->phone_number, FILTER_VALIDATE_EMAIL)
+                            ? $lead->phone_number
+                            : ($lead->email ?? '');
+                        break;
+
+                    case 'source':
+                        $value = $lead->source ?? '';
                         break;
 
                     case 'latest_status':
-                        $value = $latestStatus->status_type ?? '';
-                        break;
-
-                    case 'phone_number':
-                        $value = (string) $lead->phone_number;
+                        $value = optional($latestStatus)->status_type ?? '';
                         break;
 
                     default:
-                        $value = $lead->$col ?? '';
+                        $value = '';
                 }
+
+                // ✅ final safety (no null, no shift)
+                $value = $value ?? '';
 
                 $sheet->setCellValueExplicit(
                     $columnLetter . $rowNumber,
-                    (string)$value,
+                    (string) $value,
                     DataType::TYPE_STRING
                 );
 
