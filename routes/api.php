@@ -18,7 +18,7 @@ Route::middleware('auth:sanctum')->group(function(){
     Route::middleware('isAdmin')->group(function(){
         Route::post('/leads-import-excel', [LeadController::class, 'importExcel']);
         Route::post('/leads-bulk-assign', [LeadController::class, 'bulkAssign']);
-        Route::post('/leads-export-excel', [LeadController::class, 'exportExcel']);
+        Route::post('/leads-export', [LeadController::class, 'export']);
         Route::post('/leads-bulk-delete', [LeadController::class, 'bulkDelete']);
         
         Route::apiResource('sales-team', SalesTeamController::class);

@@ -18,7 +18,7 @@ return new class extends Migration
     $table->dateTime('timestamp');
     $table->string('source')->nullable();
     $table->string('company_name')->nullable();
-    $table->string('contact_person');
+    $table->string('contact_person')->nullable();
 
     $table->string('phone_number');
     $table->string('email')->nullable();

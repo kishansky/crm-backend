@@ -123,6 +123,11 @@ class LeadController extends Controller
 
         $data = $request->all();
 
+        // ✅ Prevent SalesTeam from changing assigned_to
+        if ($user instanceof SalesTeam) {
+            unset($data['assigned_to']);
+        }
+
         // ✅ FIX datetime
         if ($request->timestamp) {
             $data['timestamp'] = Carbon::parse($request->timestamp)
@@ -165,7 +170,7 @@ class LeadController extends Controller
             ], 403);
         }
         $request->validate([
-            'file' => 'required|mimes:xlsx,xls',
+            'file' => 'required|mimes:csv,txt,xlsx,xls',
             'assigned_to' => 'nullable|string'
         ]);
 
@@ -173,10 +178,19 @@ class LeadController extends Controller
         $assignedTo = $request->input('assigned_to', null);
 
         $file = $request->file('file');
+        $extension = $file->getClientOriginalExtension();
 
-        $spreadsheet = IOFactory::load($file->getPathname());
-        $sheet = $spreadsheet->getActiveSheet();
-        $rows = $sheet->toArray();
+        if (in_array($extension, ['csv', 'txt'])) {
+
+            // ✅ CSV
+            $rows = array_map('str_getcsv', file($file->getPathname()));
+        } else {
+
+            // ✅ Excel
+            $spreadsheet = IOFactory::load($file->getPathname());
+            $sheet = $spreadsheet->getActiveSheet();
+            $rows = $sheet->toArray();
+        }
 
         $skipped = 0;
 
@@ -184,25 +198,33 @@ class LeadController extends Controller
 
             if ($index === 0) continue;
 
-            // normalize values
-            $contact = trim($row[1] ?? '');
-            $phone   = trim($row[2] ?? '');
+            $contact = trim($row[0] ?? '');
+            $phone   = trim($row[1] ?? '');
+            $phone = trim($row[1] ?? '');
 
-            // ✅ skip if BOTH are empty
-            if ($contact === '' || $phone === '') {
+            if ($phone === '') {
                 $skipped++;
                 continue;
             }
+            // ✅ REMOVE =""
+            $phone = preg_replace('/^="(.*)"$/', '$1', $phone);
+
+            // ✅ REMOVE starting '
+            $phone = ltrim($phone, "'");
+
+            // optional: remove spaces
+            $phone = trim($phone);
+
 
             DB::table('leads_master')->insert([
                 'lead_id' => 'L' . Str::random(10),
-                'company_name' => $row[0] ?? null,
-                'contact_person' => $contact,
+                'contact_person' => $contact ?? null,
                 'phone_number' => $phone,
-                'email' => $row[3] ?? null,
-                'source' => $row[4] ?? null,
+                'email' => $row[2] ?? null,
+                'source' => $row[3] ?? null,
                 'assigned_to' => $assignedTo,
-                'enquiry_description' => $row[5] ?? null,
+                'enquiry_description' => $row[4] ?? null,
+                // 'company_name' => $row[3] ?? null,
                 'timestamp' => now(),
                 'created_at' => now(),
                 'updated_at' => now(),
@@ -240,7 +262,7 @@ class LeadController extends Controller
         ]);
     }
 
-    public function exportExcel(Request $request)
+    public function export(Request $request)
     {
         $user = $request->user();
 
@@ -250,6 +272,9 @@ class LeadController extends Controller
             ], 403);
         }
 
+        $format = $request->input('format', 'xlsx');
+
+        // ✅ INPUTS
         $columns     = $request->input('columns', []);
         $leadIds     = $request->input('lead_ids', []);
         $assignedTo  = $request->input('assigned_to');
@@ -257,20 +282,23 @@ class LeadController extends Controller
         $endDate     = $request->input('end_date');
         $limit       = $request->input('limit');
 
-        // ✅ Default columns
+        // ✅ DEFAULT COLUMNS
         if (empty($columns)) {
-            $columns = [
-                'company',
-                'contact_person',
-                'phone',
-                'email',
-                'source',
-                'latest_status'
-            ];
+            $columns = ['contact_person', 'phone', 'email', 'source', 'latest_status'];
         }
 
-        // ✅ Base query
-        $query = Lead::with(['salesPerson', 'statusHistory']);
+        // ✅ COLUMN LABELS
+        $columnLabels = [
+            'contact_person' => 'Contact Person',
+            'phone' => 'Phone',
+            'email' => 'Email',
+            'source' => 'Source',
+            'company' => 'Company',
+            'latest_status' => "Latest Status"
+        ];
+
+        // ================= QUERY =================
+        $query = Lead::query();
 
         if (!empty($leadIds)) {
             $query->whereIn('lead_id', $leadIds);
@@ -284,85 +312,144 @@ class LeadController extends Controller
             $query->whereBetween('created_at', [$startDate, $endDate]);
         }
 
-        // ✅ IMPORTANT: always define order (latest first)
-        $query->latest(); // same as orderBy('created_at', 'desc')
+        $query->latest();
 
-        // ✅ Total before limit
-        $totalRecords = $query->count();
+        // ✅ TOTAL BEFORE LIMIT
+        $totalRecords = (clone $query)->count();
 
-        // ✅ Apply limit ONLY once
-        if (!is_null($limit) && $limit !== '' && $limit > 0) {
+        // ✅ APPLY LIMIT
+        if (!empty($limit) && is_numeric($limit) && $limit > 0) {
             $query->limit((int) $limit);
         }
 
         $leads = $query->get();
         $exportedCount = $leads->count();
 
-        // ✅ Create Excel
+        // ================= CSV =================
+        if ($format === 'csv') {
+
+            $fileName = 'leads_' . time() . '.csv';
+
+            $headers = [
+                "Content-Type" => "text/csv",
+                "Content-Disposition" => "attachment; filename=$fileName",
+            ];
+
+            $callback = function () use ($leads, $columns, $columnLabels) {
+
+                $file = fopen('php://output', 'w');
+
+                // HEADER
+                fputcsv($file, array_map(fn($col) => $columnLabels[$col], $columns));
+
+                foreach ($leads as $lead) {
+
+                    $latestStatus = $lead->latestStatus ?? null;
+                    $row = [];
+
+                    foreach ($columns as $col) {
+
+                        switch ($col) {
+                            case 'contact_person':
+                                $row[] = $lead->contact_person ?? '';
+                                break;
+
+                            case 'phone':
+                                $row[] = '="' . ($lead->phone_number ?? '') . '"'; // ✅ clean CSV fix
+                                break;
+
+                            case 'email':
+                                $row[] = $lead->email ?? '';
+                                break;
+
+                            case 'source':
+                                $row[] = $lead->source ?? '';
+                                break;
+
+                            // case 'company':
+                            //     $row[] = $lead->company_name ?? '';
+                            //     break;
+
+                            case 'latest_status':
+                                $row[] = optional($latestStatus)->status_type ?? '';
+                                break;
+
+                            default:
+                                $row[] = '';
+                        }
+                    }
+
+                    fputcsv($file, $row);
+                }
+
+                fclose($file);
+            };
+
+            $response = response()->stream($callback, 200, $headers);
+
+            $response->headers->set('X-Total-Count', $totalRecords);
+            $response->headers->set('X-Exported-Count', $exportedCount);
+
+            // ✅ IMPORTANT (this fixes your issue)
+            $response->headers->set('Access-Control-Expose-Headers', 'X-Total-Count, X-Exported-Count');
+
+            return $response;
+        }
+
+        // ================= EXCEL =================
         $spreadsheet = new Spreadsheet();
         $sheet = $spreadsheet->getActiveSheet();
 
-        // ✅ Header
-        $sheet->fromArray($columns, null, 'A1');
+        // HEADER
+        $sheet->fromArray(
+            array_map(fn($col) => $columnLabels[$col], $columns),
+            null,
+            'A1'
+        );
 
         $rowNumber = 2;
 
         foreach ($leads as $lead) {
 
-            $latestStatus = $lead->latestStatus ?? null;
-
             $colIndex = 0;
 
             foreach ($columns as $col) {
 
-                $columnLetter = Coordinate::stringFromColumnIndex($colIndex + 1);
+                $latestStatus = $lead->latestStatus ?? null;
+                $columnLetter = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($colIndex + 1);
 
-                // ✅ default blank
                 $value = '';
 
                 switch ($col) {
-
-                    case 'company':
-                        $value = $lead->company_name ?? '';
-                        break;
-
                     case 'contact_person':
                         $value = $lead->contact_person ?? '';
                         break;
 
                     case 'phone':
-                        // ✅ ensure always phone only (not email)
-                        $value = filter_var($lead->phone_number, FILTER_VALIDATE_EMAIL)
-                            ? ''
-                            : ($lead->phone_number ?? '');
+                        $value = $lead->phone_number ?? '';
                         break;
 
                     case 'email':
-                        // ✅ ensure always email only
-                        $value = filter_var($lead->phone_number, FILTER_VALIDATE_EMAIL)
-                            ? $lead->phone_number
-                            : ($lead->email ?? '');
+                        $value = $lead->email ?? '';
                         break;
 
                     case 'source':
                         $value = $lead->source ?? '';
                         break;
 
+                    // case 'company':
+                    //     $value = $lead->company_name ?? '';
+                    //     break;
                     case 'latest_status':
                         $value = optional($latestStatus)->status_type ?? '';
                         break;
-
-                    default:
-                        $value = '';
                 }
 
-                // ✅ final safety (no null, no shift)
-                $value = $value ?? '';
-
+                // ✅ FORCE STRING (fix phone issue)
                 $sheet->setCellValueExplicit(
                     $columnLetter . $rowNumber,
                     (string) $value,
-                    DataType::TYPE_STRING
+                    \PhpOffice\PhpSpreadsheet\Cell\DataType::TYPE_STRING
                 );
 
                 $colIndex++;
@@ -371,18 +458,25 @@ class LeadController extends Controller
             $rowNumber++;
         }
 
-        // ✅ Save file
-        $fileName = 'leads_export_' . time() . '.xlsx';
+        // Auto width
+        foreach (range(1, count($columns)) as $i) {
+            $colLetter = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($i);
+            $sheet->getColumnDimension($colLetter)->setAutoSize(true);
+        }
+
+        $fileName = 'leads_' . time() . '.xlsx';
         $filePath = storage_path("app/public/$fileName");
 
         $writer = new Xlsx($spreadsheet);
         $writer->save($filePath);
 
-        // ✅ Response
         $response = response()->download($filePath)->deleteFileAfterSend(true);
 
         $response->headers->set('X-Total-Count', $totalRecords);
         $response->headers->set('X-Exported-Count', $exportedCount);
+
+        // ✅ IMPORTANT (this fixes your issue)
+        $response->headers->set('Access-Control-Expose-Headers', 'X-Total-Count, X-Exported-Count');
 
         return $response;
     }
