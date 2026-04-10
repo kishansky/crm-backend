@@ -22,7 +22,8 @@ class Lead extends Model
         'phone_number',
         'email',
         'enquiry_description',
-        'assigned_to'
+        'assigned_to',
+        'is_form'
     ];
 
     public function salesPerson()

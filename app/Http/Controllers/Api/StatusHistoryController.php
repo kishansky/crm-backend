@@ -15,7 +15,8 @@ class StatusHistoryController extends Controller
     {
         $user = $request->user();
 
-        $query = StatusHistory::with('lead')->latest();
+        $query = StatusHistory::with(['lead', 'addedBy', 'status'])
+            ->latest('updated_at');
 
         // ✅ Sales → only their leads' status
         if ($user instanceof SalesTeam) {
@@ -41,11 +42,38 @@ class StatusHistoryController extends Controller
             ], 403);
         }
 
-        $data = StatusHistory::create($request->all());
+        // ✅ VALIDATION (IMPORTANT)
+        $request->validate([
+            'lead_id' => 'required',
+            'status_id' => 'required|exists:statuses,id',
+            'remark' => 'nullable|string',
+            'reschedule_time' => 'nullable|date',
+            'shift' => 'nullable|in:morning,noon,evening',
+        ]);
+
+        $data = $request->only([
+            'lead_id',
+            'status_id',
+            'status_type', // keep if you want
+            'remark',
+            'reschedule_time',
+            'shift'
+        ]);
+
+        // ✅ added_by
+        $data['added_by'] = $user instanceof SalesTeam
+            ? $user->sales_person_id
+            : $user->id;
+
+            
+        // ✅ manual timestamp (IMPORTANT)
+        $data['updated_at'] = now()->setTimezone('Asia/Kolkata');
+
+        $status = StatusHistory::create($data);
 
         return response()->json([
             'message' => 'Status Added',
-            'data' => $data
+            'data' => $status
         ]);
     }
 
@@ -78,7 +106,16 @@ class StatusHistoryController extends Controller
             ], 403);
         }
 
-        $status->update($request->all());
+        $status->update([
+            ...$request->only([
+                'status_id',
+                'status_type',
+                'remark',
+                'reschedule_time',
+                'shift'
+            ]),
+            'updated_at' => now()
+        ]);
 
         return response()->json([
             'message' => 'Updated',

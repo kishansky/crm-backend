@@ -25,7 +25,10 @@ class LeadController extends Controller
         $user = $request->user();
 
         // ✅ ONLY DEFINE QUERY ONCE
-        $query = Lead::with(['salesPerson', 'latestStatus'])->latest();
+        $query = Lead::with([
+            'salesPerson',
+            'latestStatus.addedBy:sales_person_id,name' // 🔥 ONLY NAME
+        ])->latest();
 
         // ✅ ROLE FILTER
         if ($user instanceof SalesTeam) {
@@ -89,12 +92,40 @@ class LeadController extends Controller
         return response()->json($lead);
     }
 
+    public function storeFromForm(Request $request)
+    {
+        $validated = $request->validate([
+            'company_name' => 'nullable|string|max:255',
+            'contact_person' => 'nullable|string|max:255',
+            'phone_number' => 'required|string|max:20',
+            'email' => 'nullable|email',
+            'enquiry_description' => 'nullable|string',
+            // ✅ allow source but restrict values
+            'source' => 'nullable',
+            'is_form' => 'nullable|boolean',
+        ]);
+
+        // ✅ system fields
+        $validated['lead_id'] = 'L' . Str::random(10);
+        $validated['timestamp'] = Carbon::now()->format('Y-m-d H:i:s');
+
+        // 🔒 enforce form flag (don’t trust frontend)
+        $validated['is_form'] = true;
+
+        $lead = Lead::create($validated);
+
+        return response()->json([
+            'message' => 'Lead submitted successfully 🚀',
+            'data' => $lead
+        ]);
+    }
+
     // ✅ SHOW (ROLE SAFE)
     public function show(Request $request, $id)
     {
         $user = $request->user();
 
-        $lead = Lead::with(['salesPerson', 'statusHistory'])
+        $lead = Lead::with(['salesPerson', 'statusHistory.addedBy:sales_person_id,name'])
             ->findOrFail($id);
 
         // ✅ Sales can only see their own lead
@@ -126,6 +157,7 @@ class LeadController extends Controller
         // ✅ Prevent SalesTeam from changing assigned_to
         if ($user instanceof SalesTeam) {
             unset($data['assigned_to']);
+            unset($data['phone_number']);
         }
 
         // ✅ FIX datetime
@@ -542,5 +574,92 @@ class LeadController extends Controller
             'interested' => $interested,
             'closed' => $closed,
         ]);
+    }
+
+    public function followUps(Request $request)
+    {
+        $perPage = $request->per_page ?? 10;
+        $user = $request->user();
+
+        $query = Lead::with([
+            'salesPerson',
+            'latestStatus'
+        ])
+            ->whereHas('latestStatus', function ($q) {
+                $q->whereNotNull('reschedule_time'); // 🔥 only scheduled
+            });
+
+        // ✅ ROLE FILTER
+        if ($user instanceof SalesTeam) {
+            $query->where('assigned_to', $user->sales_person_id);
+        }
+
+        // ✅ FILTER TYPE
+        if ($request->filter) {
+
+            switch ($request->filter) {
+
+                case 'today':
+                    $query->whereHas('latestStatus', function ($q) {
+                        $q->whereDate('reschedule_time', now());
+                    });
+                    break;
+
+                case 'yesterday':
+                    $query->whereHas('latestStatus', function ($q) {
+                        $q->whereDate('reschedule_time', now()->subDay());
+                    });
+                    break;
+
+                case 'tomorrow':
+                    $query->whereHas('latestStatus', function ($q) {
+                        $q->whereDate('reschedule_time', now()->addDay());
+                    });
+                    break;
+
+                case 'missed':
+                    $query->whereHas('latestStatus', function ($q) {
+                        $q->whereDate('reschedule_time', '<', now());
+                    });
+                    break;
+
+                case 'week':
+                    $query->whereHas('latestStatus', function ($q) {
+                        $q->whereBetween('reschedule_time', [now(), now()->endOfWeek()]);
+                    });
+                    break;
+
+                case 'upcoming':
+                    $query->whereHas('latestStatus', function ($q) {
+                        $q->where('reschedule_time', '>', now());
+                    });
+                    break;
+
+                case 'all':
+                    $query->whereHas('latestStatus', function ($q) {
+                        $q->whereNotNull('reschedule_time');
+                    });
+                    break;
+            }
+        }
+
+        // ✅ OPTIONAL DATE FILTER (custom date)
+        if ($request->date) {
+            $query->whereHas('latestStatus', function ($q) use ($request) {
+                $q->whereDate('reschedule_time', $request->date);
+            });
+        }
+
+        return response()->json(
+            $query
+                ->orderBy(
+                    \App\Models\StatusHistory::select('reschedule_time')
+                        ->whereColumn('lead_id', 'leads_master.lead_id')
+                        ->latest('updated_at') // latest status
+                        ->limit(1),
+                    'desc'
+                )
+                ->paginate($perPage)
+        );
     }
 }

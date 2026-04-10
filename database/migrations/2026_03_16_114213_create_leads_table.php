@@ -25,7 +25,7 @@ return new class extends Migration
 
     $table->text('enquiry_description')->nullable();
 
-    $table->string('assigned_to');
+    $table->string('assigned_to')->nullable()->change();;
 
     $table->foreign('assigned_to')
           ->references('sales_person_id')
