@@ -8,6 +8,7 @@ use App\Models\Lead;
 use Carbon\Carbon;
 use App\Models\User;
 use App\Models\SalesTeam;
+use App\Models\StatusHistory;
 use PhpOffice\PhpSpreadsheet\IOFactory;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -79,17 +80,38 @@ class LeadController extends Controller
     // ✅ STORE
     public function store(Request $request)
     {
+        // ✅ Validate request
+        $request->validate([
+            'phone_number' => 'required|string|max:15',
+        ]);
+
+        // 🔍 Check if phone number already exists
+        $existingLead = Lead::where('phone_number', $request->phone_number)->first();
+
+        if ($existingLead) {
+            return response()->json([
+                'status' => false,
+                'message' => 'Phone number already registered.',
+                'data' => $existingLead
+            ], 409); // 409 Conflict
+        }
+
         $data = $request->all();
 
-        // ✅ FIX datetime
+        // ✅ Fix datetime format
         if ($request->timestamp) {
             $data['timestamp'] = Carbon::parse($request->timestamp)
                 ->format('Y-m-d H:i:s');
         }
 
+        // ✅ Create new lead
         $lead = Lead::create($data);
 
-        return response()->json($lead);
+        return response()->json([
+            'status' => true,
+            'message' => 'Lead created successfully.',
+            'data' => $lead
+        ], 201);
     }
 
     public function storeFromForm(Request $request)
@@ -100,24 +122,37 @@ class LeadController extends Controller
             'phone_number' => 'required|string|max:20',
             'email' => 'nullable|email',
             'enquiry_description' => 'nullable|string',
-            // ✅ allow source but restrict values
-            'source' => 'nullable',
+            // ✅ allow source but restrict values if needed
+            'source' => 'nullable|string|max:50',
             'is_form' => 'nullable|boolean',
         ]);
 
-        // ✅ system fields
-        $validated['lead_id'] = 'L' . Str::random(10);
+        // 🔍 Check if phone number already exists
+        $existingLead = Lead::where('phone_number', $validated['phone_number'])->first();
+
+        if ($existingLead) {
+            return response()->json([
+                'status' => false,
+                'message' => 'Phone number already registered.',
+                'data' => $existingLead
+            ], 409); // HTTP 409 Conflict
+        }
+
+        // ✅ System-generated fields
+        $validated['lead_id'] = 'L' . Str::upper(Str::random(10));
         $validated['timestamp'] = Carbon::now()->format('Y-m-d H:i:s');
 
-        // 🔒 enforce form flag (don’t trust frontend)
+        // 🔒 Enforce form flag (do not trust frontend)
         $validated['is_form'] = true;
 
+        // ✅ Create the lead
         $lead = Lead::create($validated);
 
         return response()->json([
+            'status' => true,
             'message' => 'Lead submitted successfully 🚀',
             'data' => $lead
-        ]);
+        ], 201);
     }
 
     // ✅ SHOW (ROLE SAFE)
@@ -142,36 +177,55 @@ class LeadController extends Controller
     public function update(Request $request, $id)
     {
         $user = $request->user();
-
         $lead = Lead::findOrFail($id);
 
         // ❌ Block sales from updating others' leads
         if ($user instanceof SalesTeam && $lead->assigned_to !== $user->sales_person_id) {
             return response()->json([
+                'status' => false,
                 'message' => 'Unauthorized'
             ], 403);
         }
 
         $data = $request->all();
 
-        // ✅ Prevent SalesTeam from changing assigned_to
+        // ✅ Prevent SalesTeam from changing assigned_to and phone_number
         if ($user instanceof SalesTeam) {
             unset($data['assigned_to']);
             unset($data['phone_number']);
         }
 
-        // ✅ FIX datetime
+        // 🔍 Check if phone number already exists (for Admin updates)
+        if (
+            isset($data['phone_number']) &&
+            $data['phone_number'] !== $lead->phone_number
+        ) {
+            $exists = Lead::where('phone_number', $data['phone_number'])
+                ->where('lead_id', '!=', $lead->id)
+                ->exists();
+
+            if ($exists) {
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Phone number already registered.'
+                ], 409); // HTTP 409 Conflict
+            }
+        }
+
+        // ✅ Fix datetime format
         if ($request->timestamp) {
             $data['timestamp'] = Carbon::parse($request->timestamp)
                 ->format('Y-m-d H:i:s');
         }
 
+        // ✅ Update lead
         $lead->update($data);
 
         return response()->json([
-            'message' => 'Updated',
+            'status' => true,
+            'message' => 'Lead updated successfully.',
             'data' => $lead
-        ]);
+        ], 200);
     }
 
     // ✅ DELETE (ADMIN ONLY recommended)
@@ -182,92 +236,118 @@ class LeadController extends Controller
         // ❌ Sales cannot delete
         if ($user instanceof SalesTeam) {
             return response()->json([
+                'status' => false,
                 'message' => 'Unauthorized (Admin only)'
             ], 403);
         }
 
-        Lead::findOrFail($id)->delete();
+        // 🔍 Find the lead (including soft-deleted ones)
+        $lead = Lead::withTrashed()->findOrFail($id);
+
+        // 🗑️ Permanently delete the record
+        $lead->forceDelete();
 
         return response()->json([
-            'message' => 'Deleted'
-        ]);
+            'status' => true,
+            'message' => 'Lead deleted'
+        ], 200);
     }
+
 
     public function importExcel(Request $request)
     {
         $user = $request->user();
+
+        // ❌ Only Admin allowed
         if ($user instanceof SalesTeam) {
             return response()->json([
                 'message' => 'Unauthorized (Admin only)'
             ], 403);
         }
+
         $request->validate([
             'file' => 'required|mimes:csv,txt,xlsx,xls',
             'assigned_to' => 'nullable|string'
         ]);
 
-        // ✅ may be null
+        // ✅ Assigned user (may be null)
         $assignedTo = $request->input('assigned_to', null);
 
         $file = $request->file('file');
         $extension = $file->getClientOriginalExtension();
 
-        if (in_array($extension, ['csv', 'txt'])) {
-
-            // ✅ CSV
+        // 📂 Read file
+        if (in_array(strtolower($extension), ['csv', 'txt'])) {
             $rows = array_map('str_getcsv', file($file->getPathname()));
         } else {
-
-            // ✅ Excel
             $spreadsheet = IOFactory::load($file->getPathname());
             $sheet = $spreadsheet->getActiveSheet();
             $rows = $sheet->toArray();
         }
 
+        $insertData = [];
         $skipped = 0;
+        $duplicates = 0;
+
+        // 🔍 Fetch existing phone numbers once for performance
+        $existingPhones = DB::table('leads_master')
+            ->pluck('phone_number')
+            ->map(fn($phone) => trim($phone))
+            ->toArray();
+
+        $existingPhones = array_flip($existingPhones); // Fast lookup
 
         foreach ($rows as $index => $row) {
 
-            if ($index === 0) continue;
+            // Skip header row
+            if ($index === 0) {
+                continue;
+            }
 
             $contact = trim($row[0] ?? '');
-            $phone   = trim($row[1] ?? '');
             $phone = trim($row[1] ?? '');
 
+            // Skip empty phone numbers
             if ($phone === '') {
                 $skipped++;
                 continue;
             }
-            // ✅ REMOVE =""
+
+            // ✅ Clean Excel formatting issues
             $phone = preg_replace('/^="(.*)"$/', '$1', $phone);
-
-            // ✅ REMOVE starting '
             $phone = ltrim($phone, "'");
-
-            // optional: remove spaces
             $phone = trim($phone);
 
+            // 🔁 Skip duplicate phone numbers (existing in DB)
+            if (isset($existingPhones[$phone])) {
+                $duplicates++;
+                $skipped++;
+                continue;
+            }
 
-            DB::table('leads_master')->insert([
-                'lead_id' => 'L' . Str::random(10),
-                'contact_person' => $contact ?? null,
+            // Prevent duplicates within the same file
+            $existingPhones[$phone] = true;
+
+            $insertData[] = [
+                'lead_id' => 'L' . Str::upper(Str::random(10)),
+                'contact_person' => $contact ?: null,
                 'phone_number' => $phone,
                 'email' => $row[2] ?? null,
                 'source' => $row[3] ?? null,
                 'assigned_to' => $assignedTo,
                 'enquiry_description' => $row[4] ?? null,
-                // 'company_name' => $row[3] ?? null,
-                'timestamp' => now(),
-                'created_at' => now(),
-                'updated_at' => now(),
-            ]);
+                'timestamp' => Carbon::now(),
+                'created_at' => Carbon::now(),
+                'updated_at' => Carbon::now(),
+            ];
         }
 
-        return response()->json([
-            'message' => $skipped > 0
-                ? "Imported successfully (Skipped: $skipped rows)"
-                : "Imported successfully"
-        ]);
+        // 🚀 Bulk Insert for Better Performance
+        if (!empty($insertData)) {
+            DB::table('leads_master')->insert($insertData);
+        }
+
+        return response()->json(['message' => $skipped > 0 ? "Imported successfully ($skipped rows $duplicates Duplicates)" : "Imported successfully"]);
     }
 
     public function bulkAssign(Request $request)
@@ -307,12 +387,12 @@ class LeadController extends Controller
         $format = $request->input('format', 'xlsx');
 
         // ✅ INPUTS
-        $columns     = $request->input('columns', []);
-        $leadIds     = $request->input('lead_ids', []);
-        $assignedTo  = $request->input('assigned_to');
-        $startDate   = $request->input('start_date');
-        $endDate     = $request->input('end_date');
-        $limit       = $request->input('limit');
+        $columns = $request->input('columns', []);
+        $leadIds = $request->input('lead_ids', []);
+        $assignedTo = $request->input('assigned_to');
+        $startDate = $request->input('start_date');
+        $endDate = $request->input('end_date');
+        $limit = $request->input('limit');
 
         // ✅ DEFAULT COLUMNS
         if (empty($columns)) {
@@ -517,64 +597,130 @@ class LeadController extends Controller
     {
         $user = $request->user();
 
-        // ❌ Only admin
+        // ❌ Only admin allowed
         if ($user instanceof SalesTeam) {
             return response()->json([
+                'status' => false,
                 'message' => 'Unauthorized (Admin only)'
             ], 403);
         }
 
+        // ✅ Validate request
         $request->validate([
-            'lead_ids' => 'required|array'
+            'lead_ids' => 'required|array|min:1',
+            'lead_ids.*' => 'required|string|exists:leads_master,lead_id',
         ]);
 
-        Lead::whereIn('lead_id', $request->lead_ids)->delete();
+        // 🔍 Fetch leads including soft-deleted ones
+        $leads = Lead::withTrashed()
+            ->whereIn('lead_id', $request->lead_ids)
+            ->get();
 
-        return response()->json([
-            'message' => 'Leads deleted successfully 🗑️'
-        ]);
-    }
-
-    public function dashboardStats(Request $request)
-    {
-        $user = $request->user();
-
-        $query = Lead::query();
-
-        // ✅ Sales: only own leads
-        if ($user instanceof SalesTeam) {
-            $query->where('assigned_to', $user->sales_person_id);
+        // 🗑️ Perform hard delete
+        $deletedCount = $leads->count();
+        foreach ($leads as $lead) {
+            $lead->forceDelete();
         }
 
-        // ✅ Total Leads
-        $totalLeads = (clone $query)->count();
-
-        // ✅ Today Leads
-        $todayLeads = (clone $query)
-            ->whereDate('created_at', now()->toDateString())
-            ->count();
-
-        // ✅ Interested Leads (latest status)
-        $interested = (clone $query)
-            ->whereHas('latestStatus', function ($q) {
-                $q->where('status_type', 'Interested');
-            })
-            ->count();
-
-        // ✅ Closed Ordered
-        $closed = (clone $query)
-            ->whereHas('latestStatus', function ($q) {
-                $q->where('status_type', 'Closed-Ordered');
-            })
-            ->count();
-
         return response()->json([
-            'total_leads' => $totalLeads,
-            'today_leads' => $todayLeads,
-            'interested' => $interested,
-            'closed' => $closed,
-        ]);
+            'status' => true,
+            'message' => "$deletedCount Leads deleted",
+            'deleted_count' => $deletedCount
+        ], 200);
     }
+
+public function dashboardStats(Request $request)
+{
+    $user = $request->user();
+
+    // 📅 Date references
+    $today = Carbon::today();
+    $startOfWeek = Carbon::now()->startOfWeek();
+    $startOfMonth = Carbon::now()->startOfMonth();
+
+    // ==========================
+    // 🔹 LEADS QUERY
+    // ==========================
+    $leadQuery = Lead::query();
+
+    // Restrict sales users to their own leads
+    if ($user instanceof SalesTeam) {
+        $leadQuery->where('assigned_to', $user->sales_person_id);
+    }
+
+    // ✅ Lead Statistics
+    $totalLeads = (clone $leadQuery)->count();
+
+    $todayLeads = (clone $leadQuery)
+        ->whereDate('created_at', $today)
+        ->count();
+
+    $weeklyLeads = (clone $leadQuery)
+        ->whereDate('created_at', '>=', $startOfWeek)
+        ->count();
+
+    $monthlyLeads = (clone $leadQuery)
+        ->whereDate('created_at', '>=', $startOfMonth)
+        ->count();
+
+    // ==========================
+    // 🔹 STATUS QUERY
+    // ==========================
+    $statusQuery = DB::table('status_history')
+        ->join('statuses', 'status_history.status_id', '=', 'statuses.id')
+        ->join('leads_master', 'status_history.lead_id', '=', 'leads_master.lead_id')
+        ->whereNull('status_history.deleted_at')
+        ->whereDate('status_history.updated_at', $today);
+
+    // Restrict sales users to their own activities
+    if ($user instanceof SalesTeam) {
+        $statusQuery->where(function ($q) use ($user) {
+            $q->where('leads_master.assigned_to', $user->sales_person_id)
+              ->orWhere('status_history.added_by', $user->sales_person_id);
+        });
+    }
+
+    // Fetch today's status counts
+    $todayStatusCounts = $statusQuery
+        ->select(
+            'statuses.id',
+            'statuses.name',
+            'statuses.color',
+            DB::raw('COUNT(*) as count')
+        )
+        ->groupBy('statuses.id', 'statuses.name', 'statuses.color')
+        ->get()
+        ->keyBy('id');
+
+    // Fetch all active statuses
+    $allStatuses = DB::table('statuses')
+        ->where('is_active', 1)
+        ->select('id', 'name', 'color')
+        ->get();
+
+    // Merge with zero counts
+    $statusCounts = $allStatuses->map(function ($status) use ($todayStatusCounts) {
+        return [
+            'status_id' => $status->id,
+            'status_name' => $status->name,
+            'status_color' => $status->color,
+            'count' => isset($todayStatusCounts[$status->id])
+                ? (int) $todayStatusCounts[$status->id]->count
+                : 0,
+        ];
+    })->values();
+
+    // ==========================
+    // 🔹 RESPONSE
+    // ==========================
+    return response()->json([
+        'total_leads' => $totalLeads,
+        'today_leads' => $todayLeads,
+        'weekly_leads' => $weeklyLeads,
+        'monthly_leads' => $monthlyLeads,
+        'status_counts' => $statusCounts,
+    ]);
+}
 
     public function followUps(Request $request)
     {
@@ -584,10 +730,7 @@ class LeadController extends Controller
         $query = Lead::with([
             'salesPerson',
             'latestStatus'
-        ])
-            ->whereHas('latestStatus', function ($q) {
-                $q->whereNotNull('reschedule_time'); // 🔥 only scheduled
-            });
+        ]);
 
         // ✅ ROLE FILTER
         if ($user instanceof SalesTeam) {
@@ -596,12 +739,15 @@ class LeadController extends Controller
 
         // ✅ FILTER TYPE
         if ($request->filter) {
-
             switch ($request->filter) {
 
                 case 'today':
-                    $query->whereHas('latestStatus', function ($q) {
-                        $q->whereDate('reschedule_time', now());
+                    $query->where(function ($q) {
+                        $q->whereHas('latestStatus', function ($sub) {
+                            $sub->whereDate('reschedule_time', now());
+                        })
+                            // ✅ Include leads with no status
+                            ->orWhereDoesntHave('latestStatus');
                     });
                     break;
 
@@ -620,12 +766,15 @@ class LeadController extends Controller
                 case 'missed':
                     $query->whereHas('latestStatus', function ($q) {
                         $q->whereDate('reschedule_time', '<', now());
-                    });
+                    })->orWhereDoesntHave('latestStatus');;
                     break;
 
                 case 'week':
                     $query->whereHas('latestStatus', function ($q) {
-                        $q->whereBetween('reschedule_time', [now(), now()->endOfWeek()]);
+                        $q->whereBetween('reschedule_time', [
+                            now(),
+                            now()->endOfWeek()
+                        ]);
                     });
                     break;
 
@@ -638,12 +787,20 @@ class LeadController extends Controller
                 case 'all':
                     $query->whereHas('latestStatus', function ($q) {
                         $q->whereNotNull('reschedule_time');
-                    });
+                    })->orWhereDoesntHave('latestStatus');;
                     break;
             }
+        } else {
+            // 🔹 Default: Show today's follow-ups including leads without status
+            $query->where(function ($q) {
+                $q->whereHas('latestStatus', function ($sub) {
+                    $sub->whereDate('reschedule_time', now());
+                })
+                    ->orWhereDoesntHave('latestStatus');
+            });
         }
 
-        // ✅ OPTIONAL DATE FILTER (custom date)
+        // ✅ OPTIONAL CUSTOM DATE FILTER
         if ($request->date) {
             $query->whereHas('latestStatus', function ($q) use ($request) {
                 $q->whereDate('reschedule_time', $request->date);
@@ -651,15 +808,123 @@ class LeadController extends Controller
         }
 
         return response()->json(
-            $query
-                ->orderBy(
-                    \App\Models\StatusHistory::select('reschedule_time')
-                        ->whereColumn('lead_id', 'leads_master.lead_id')
-                        ->latest('updated_at') // latest status
-                        ->limit(1),
-                    'desc'
-                )
-                ->paginate($perPage)
+            $query->orderBy(
+                StatusHistory::select('reschedule_time')
+                    ->whereColumn('lead_id', 'leads_master.lead_id')
+                    ->latest('updated_at')
+                    ->limit(1),
+                'desc'
+            )->paginate($perPage)
         );
+    }
+
+    public function teamStatusReport(Request $request)
+    {
+        $user = $request->user();
+
+        // 📅 Determine date filter
+        $filter = $request->input('filter', 'today');
+
+        switch ($filter) {
+            case 'yesterday':
+                $date = Carbon::yesterday()->toDateString();
+                break;
+
+            case 'date':
+                $date = Carbon::parse($request->input('date'))->toDateString();
+                break;
+
+            case 'today':
+            default:
+                $date = Carbon::today()->toDateString();
+                break;
+        }
+
+        // 📊 Fetch grouped data
+        $query = DB::table('status_history')
+            ->leftJoin('sales_team', 'status_history.added_by', '=', 'sales_team.sales_person_id')
+            ->leftJoin('statuses', 'status_history.status_id', '=', 'statuses.id')
+            ->select(
+                'status_history.added_by',
+                DB::raw('COALESCE(sales_team.name, "Admin") as team_member'),
+                'statuses.name as status_name',
+                'statuses.color as status_color',
+                DB::raw('COUNT(*) as total')
+            )
+            ->whereDate('status_history.updated_at', $date)
+            ->whereNull('status_history.deleted_at');
+
+        // 🔒 Sales Team can only view their own reports
+        if ($user instanceof SalesTeam) {
+            $query->where('status_history.added_by', $user->sales_person_id);
+        }
+
+        $rows = $query->groupBy(
+            'status_history.added_by',
+            'team_member',
+            'statuses.name',
+            'statuses.color'
+        )
+            ->orderBy('team_member')
+            ->get();
+
+        // 📌 Fetch teams (Admin sees all, Sales sees only themselves)
+        if ($user instanceof SalesTeam) {
+            $teams = [
+                [
+                    'sales_person_id' => $user->sales_person_id,
+                    'name' => $user->name
+                ]
+            ];
+        } else {
+            $teams = SalesTeam::select('sales_person_id', 'name')
+                ->whereNull('deleted_at')
+                ->get()
+                ->toArray();
+
+            // Include Admin
+            array_unshift($teams, [
+                'sales_person_id' => '1',
+                'name' => 'Admin'
+            ]);
+        }
+
+        // 🔄 Initialize grouped structure with zero counts
+        $grouped = [];
+        foreach ($teams as $team) {
+            $grouped[$team['name']] = [
+                'team_member' => $team['name'],
+                'total' => 0,
+                'statuses' => []
+            ];
+        }
+
+        // 🔄 Populate actual data
+        foreach ($rows as $row) {
+            $team = $row->team_member;
+
+            if (!isset($grouped[$team])) {
+                $grouped[$team] = [
+                    'team_member' => $team,
+                    'total' => 0,
+                    'statuses' => []
+                ];
+            }
+
+            $grouped[$team]['statuses'][] = [
+                'status_name' => $row->status_name,
+                'status_color' => $row->status_color,
+                'count' => (int) $row->total
+            ];
+
+            $grouped[$team]['total'] += (int) $row->total;
+        }
+
+        return response()->json([
+            'status' => true,
+            'filter' => $filter,
+            'date' => $date,
+            'data' => array_values($grouped)
+        ]);
     }
 }

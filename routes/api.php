@@ -31,12 +31,13 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
     // ✅ Shared (Admin + Sales)
+    Route::get('/team-status-report', [LeadController::class, 'teamStatusReport']);
     Route::apiResource('leads', LeadController::class);
     Route::apiResource('status-history', StatusHistoryController::class);
     Route::get('/dashboard-stats', [LeadController::class, 'dashboardStats']);
 
     Route::get('/follow-ups', [LeadController::class, 'followUps']);
-    
+
     // 🔥 ADD THIS
     Route::get('/statuses', [StatusController::class, 'index']);
 

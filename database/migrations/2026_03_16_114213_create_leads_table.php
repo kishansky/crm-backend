@@ -20,7 +20,7 @@ return new class extends Migration
     $table->string('company_name')->nullable();
     $table->string('contact_person')->nullable();
 
-    $table->string('phone_number');
+    $table->string('phone_number')->unique();
     $table->string('email')->nullable();
 
     $table->text('enquiry_description')->nullable();
