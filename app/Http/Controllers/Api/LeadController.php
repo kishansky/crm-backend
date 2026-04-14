@@ -629,98 +629,98 @@ class LeadController extends Controller
         ], 200);
     }
 
-public function dashboardStats(Request $request)
-{
-    $user = $request->user();
+    public function dashboardStats(Request $request)
+    {
+        $user = $request->user();
 
-    // 📅 Date references
-    $today = Carbon::today();
-    $startOfWeek = Carbon::now()->startOfWeek();
-    $startOfMonth = Carbon::now()->startOfMonth();
+        // 📅 Date references
+        $today = Carbon::today();
+        $startOfWeek = Carbon::now()->startOfWeek();
+        $startOfMonth = Carbon::now()->startOfMonth();
 
-    // ==========================
-    // 🔹 LEADS QUERY
-    // ==========================
-    $leadQuery = Lead::query();
+        // ==========================
+        // 🔹 LEADS QUERY
+        // ==========================
+        $leadQuery = Lead::query();
 
-    // Restrict sales users to their own leads
-    if ($user instanceof SalesTeam) {
-        $leadQuery->where('assigned_to', $user->sales_person_id);
+        // Restrict sales users to their own leads
+        if ($user instanceof SalesTeam) {
+            $leadQuery->where('assigned_to', $user->sales_person_id);
+        }
+
+        // ✅ Lead Statistics
+        $totalLeads = (clone $leadQuery)->count();
+
+        $todayLeads = (clone $leadQuery)
+            ->whereDate('created_at', $today)
+            ->count();
+
+        $weeklyLeads = (clone $leadQuery)
+            ->whereDate('created_at', '>=', $startOfWeek)
+            ->count();
+
+        $monthlyLeads = (clone $leadQuery)
+            ->whereDate('created_at', '>=', $startOfMonth)
+            ->count();
+
+        // ==========================
+        // 🔹 STATUS QUERY
+        // ==========================
+        $statusQuery = DB::table('status_history')
+            ->join('statuses', 'status_history.status_id', '=', 'statuses.id')
+            ->join('leads_master', 'status_history.lead_id', '=', 'leads_master.lead_id')
+            ->whereNull('status_history.deleted_at')
+            ->whereDate('status_history.updated_at', $today);
+
+        // Restrict sales users to their own activities
+        if ($user instanceof SalesTeam) {
+            $statusQuery->where(function ($q) use ($user) {
+                $q->where('leads_master.assigned_to', $user->sales_person_id)
+                    ->orWhere('status_history.added_by', $user->sales_person_id);
+            });
+        }
+
+        // Fetch today's status counts
+        $todayStatusCounts = $statusQuery
+            ->select(
+                'statuses.id',
+                'statuses.name',
+                'statuses.color',
+                DB::raw('COUNT(*) as count')
+            )
+            ->groupBy('statuses.id', 'statuses.name', 'statuses.color')
+            ->get()
+            ->keyBy('id');
+
+        // Fetch all active statuses
+        $allStatuses = DB::table('statuses')
+            ->where('is_active', 1)
+            ->select('id', 'name', 'color')
+            ->get();
+
+        // Merge with zero counts
+        $statusCounts = $allStatuses->map(function ($status) use ($todayStatusCounts) {
+            return [
+                'status_id' => $status->id,
+                'status_name' => $status->name,
+                'status_color' => $status->color,
+                'count' => isset($todayStatusCounts[$status->id])
+                    ? (int) $todayStatusCounts[$status->id]->count
+                    : 0,
+            ];
+        })->values();
+
+        // ==========================
+        // 🔹 RESPONSE
+        // ==========================
+        return response()->json([
+            'total_leads' => $totalLeads,
+            'today_leads' => $todayLeads,
+            'weekly_leads' => $weeklyLeads,
+            'monthly_leads' => $monthlyLeads,
+            'status_counts' => $statusCounts,
+        ]);
     }
-
-    // ✅ Lead Statistics
-    $totalLeads = (clone $leadQuery)->count();
-
-    $todayLeads = (clone $leadQuery)
-        ->whereDate('created_at', $today)
-        ->count();
-
-    $weeklyLeads = (clone $leadQuery)
-        ->whereDate('created_at', '>=', $startOfWeek)
-        ->count();
-
-    $monthlyLeads = (clone $leadQuery)
-        ->whereDate('created_at', '>=', $startOfMonth)
-        ->count();
-
-    // ==========================
-    // 🔹 STATUS QUERY
-    // ==========================
-    $statusQuery = DB::table('status_history')
-        ->join('statuses', 'status_history.status_id', '=', 'statuses.id')
-        ->join('leads_master', 'status_history.lead_id', '=', 'leads_master.lead_id')
-        ->whereNull('status_history.deleted_at')
-        ->whereDate('status_history.updated_at', $today);
-
-    // Restrict sales users to their own activities
-    if ($user instanceof SalesTeam) {
-        $statusQuery->where(function ($q) use ($user) {
-            $q->where('leads_master.assigned_to', $user->sales_person_id)
-              ->orWhere('status_history.added_by', $user->sales_person_id);
-        });
-    }
-
-    // Fetch today's status counts
-    $todayStatusCounts = $statusQuery
-        ->select(
-            'statuses.id',
-            'statuses.name',
-            'statuses.color',
-            DB::raw('COUNT(*) as count')
-        )
-        ->groupBy('statuses.id', 'statuses.name', 'statuses.color')
-        ->get()
-        ->keyBy('id');
-
-    // Fetch all active statuses
-    $allStatuses = DB::table('statuses')
-        ->where('is_active', 1)
-        ->select('id', 'name', 'color')
-        ->get();
-
-    // Merge with zero counts
-    $statusCounts = $allStatuses->map(function ($status) use ($todayStatusCounts) {
-        return [
-            'status_id' => $status->id,
-            'status_name' => $status->name,
-            'status_color' => $status->color,
-            'count' => isset($todayStatusCounts[$status->id])
-                ? (int) $todayStatusCounts[$status->id]->count
-                : 0,
-        ];
-    })->values();
-
-    // ==========================
-    // 🔹 RESPONSE
-    // ==========================
-    return response()->json([
-        'total_leads' => $totalLeads,
-        'today_leads' => $todayLeads,
-        'weekly_leads' => $weeklyLeads,
-        'monthly_leads' => $monthlyLeads,
-        'status_counts' => $statusCounts,
-    ]);
-}
 
     public function followUps(Request $request)
     {
@@ -746,7 +746,6 @@ public function dashboardStats(Request $request)
                         $q->whereHas('latestStatus', function ($sub) {
                             $sub->whereDate('reschedule_time', now());
                         })
-                            // ✅ Include leads with no status
                             ->orWhereDoesntHave('latestStatus');
                     });
                     break;
@@ -764,9 +763,12 @@ public function dashboardStats(Request $request)
                     break;
 
                 case 'missed':
-                    $query->whereHas('latestStatus', function ($q) {
-                        $q->whereDate('reschedule_time', '<', now());
-                    })->orWhereDoesntHave('latestStatus');;
+                    $query->where(function ($q) {
+                        $q->whereHas('latestStatus', function ($sub) {
+                            $sub->whereDate('reschedule_time', '<', now());
+                        })
+                            ->orWhereDoesntHave('latestStatus');
+                    });
                     break;
 
                 case 'week':
@@ -785,9 +787,12 @@ public function dashboardStats(Request $request)
                     break;
 
                 case 'all':
-                    $query->whereHas('latestStatus', function ($q) {
-                        $q->whereNotNull('reschedule_time');
-                    })->orWhereDoesntHave('latestStatus');;
+                    $query->where(function ($q) {
+                        $q->whereHas('latestStatus', function ($sub) {
+                            $sub->whereNotNull('reschedule_time');
+                        })
+                            ->orWhereDoesntHave('latestStatus');
+                    });
                     break;
             }
         } else {
