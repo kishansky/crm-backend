@@ -5,18 +5,24 @@ use App\Http\Controllers\Api\SalesTeamController;
 use App\Http\Controllers\Api\LeadController;
 use App\Http\Controllers\Api\StatusHistoryController;
 use App\Http\Controllers\Api\PerformanceController;
+use App\Http\Controllers\Api\StatusController;
+use App\Http\Controllers\Api\PlaceController;
+use App\Http\Controllers\Api\NeedController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
-use App\Http\Controllers\Api\StatusController;
 
-// 🔓 Public
+// 🔓 Public Routes
 Route::post('/login', [AuthController::class, 'login']);
 Route::post('/public/lead-form', [LeadController::class, 'storeFromForm']);
 
-// 🔐 Protected
+// 🔐 Protected Routes
 Route::middleware('auth:sanctum')->group(function () {
 
-    // ✅ Admin Only Routes
+    /*
+    |--------------------------------------------------------------------------
+    | 🔐 Admin Only Routes
+    |--------------------------------------------------------------------------
+    */
     Route::middleware('isAdmin')->group(function () {
         Route::post('/change-password', [AuthController::class, 'changePassword']);
         Route::post('/leads-import-excel', [LeadController::class, 'importExcel']);
@@ -24,24 +30,48 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/leads-export', [LeadController::class, 'export']);
         Route::post('/leads-bulk-delete', [LeadController::class, 'bulkDelete']);
 
+        // Sales Team Management
         Route::apiResource('sales-team', SalesTeamController::class);
+
+        // Performance Management
         Route::apiResource('performance', PerformanceController::class);
-        // 🔥 ADD THIS
+
+        // Status Management (Admin Only)
         Route::apiResource('statuses', StatusController::class)->except(['index']);
+
+        // 📍 Places Management (Admin Only)
+        Route::apiResource('places', PlaceController::class);
     });
 
-    // ✅ Shared (Admin + Sales)
-    Route::get('/team-status-report', [LeadController::class, 'teamStatusReport']);
+    /*
+    |--------------------------------------------------------------------------
+    | 👥 Shared Routes (Admin + Sales)
+    |--------------------------------------------------------------------------
+    */
+
+    // Leads & Status
     Route::apiResource('leads', LeadController::class);
     Route::apiResource('status-history', StatusHistoryController::class);
-    Route::get('/dashboard-stats', [LeadController::class, 'dashboardStats']);
 
+    // Needs Management (Admin + Sales)
+    Route::apiResource('needs', NeedController::class);
+
+    // Reports & Dashboard
+    Route::get('/team-status-report', [LeadController::class, 'teamStatusReport']);
+    Route::get('/dashboard-stats', [LeadController::class, 'dashboardStats']);
     Route::get('/follow-ups', [LeadController::class, 'followUps']);
 
-    // 🔥 ADD THIS
+    // Status List for Dropdowns
     Route::get('/statuses', [StatusController::class, 'index']);
 
-    // ✅ Logout
+    // Active Places for Dropdowns
+    Route::get('/places-list', [PlaceController::class, 'index']);
+
+    /*
+    |--------------------------------------------------------------------------
+    | 🔓 Logout
+    |--------------------------------------------------------------------------
+    */
     Route::post('/logout', function (Request $request) {
         $request->user()->currentAccessToken()->delete();
 

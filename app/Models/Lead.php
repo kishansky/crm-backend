@@ -41,4 +41,9 @@ class Lead extends Model
         return $this->hasOne(StatusHistory::class, 'lead_id', 'lead_id')
             ->latestOfMany('history_id');
     }
+
+    public function needs()
+    {
+        return $this->hasMany(Need::class, 'lead_id', 'lead_id');
+    }
 }

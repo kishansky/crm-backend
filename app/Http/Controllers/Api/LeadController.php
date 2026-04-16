@@ -20,63 +20,79 @@ use PhpOffice\PhpSpreadsheet\Cell\Coordinate;
 class LeadController extends Controller
 {
     // ✅ LIST WITH ROLE FILTER
-    public function index(Request $request)
-    {
-        $perPage = $request->per_page ?? 10;
-        $user = $request->user();
+public function index(Request $request)
+{
+    $perPage = $request->per_page ?? 10;
+    $user = $request->user();
 
-        // ✅ ONLY DEFINE QUERY ONCE
-        $query = Lead::with([
-            'salesPerson',
-            'latestStatus.addedBy:sales_person_id,name' // 🔥 ONLY NAME
-        ])->latest();
+    // ✅ DEFINE QUERY WITH RELATIONSHIPS
+    $query = Lead::with([
+        'salesPerson',
+        'latestStatus.addedBy:sales_person_id,name',
+        'needs.place' // 🔥 Include needs with places
+    ])->latest();
 
-        // ✅ ROLE FILTER
-        if ($user instanceof SalesTeam) {
-            $query->where('assigned_to', $user->sales_person_id);
-        }
-
-        // ✅ SEARCH
-        if ($request->search && strlen($request->search) >= 3) {
-            $search = $request->search;
-
-            $query->where(function ($q) use ($search) {
-                $q->where('company_name', 'like', "%$search%")
-                    ->orWhere('contact_person', 'like', "%$search%")
-                    ->orWhere('phone_number', 'like', "%$search%")
-                    ->orWhere('email', 'like', "%$search%");
-            });
-        }
-
-        // ✅ SOURCE FILTER
-        if ($request->source) {
-            $query->where('source', $request->source);
-        }
-
-        // ✅ SALES FILTER (admin only)
-        if ($request->assigned_to && !($user instanceof SalesTeam)) {
-            $query->where('assigned_to', $request->assigned_to);
-        }
-
-        // ✅ DATE FILTER
-        if ($request->start_date && $request->end_date) {
-            $query->whereBetween('created_at', [
-                $request->start_date,
-                $request->end_date
-            ]);
-        }
-
-        // ✅ STATUS FILTER (LATEST ONLY)
-        if ($request->status) {
-            $query->whereHas('latestStatus', function ($q) use ($request) {
-                $q->where('status_type', $request->status);
-            });
-        }
-
-        $leads = $query->paginate($perPage);
-
-        return response()->json($leads);
+    // ✅ ROLE FILTER (Sales can view only their leads)
+    if ($user instanceof SalesTeam) {
+        $query->where('assigned_to', $user->sales_person_id);
     }
+
+    // ✅ SEARCH FILTER
+    if ($request->search && strlen($request->search) >= 3) {
+        $search = $request->search;
+
+        $query->where(function ($q) use ($search) {
+            $q->where('company_name', 'like', "%$search%")
+                ->orWhere('contact_person', 'like', "%$search%")
+                ->orWhere('phone_number', 'like', "%$search%")
+                ->orWhere('email', 'like', "%$search%");
+        });
+    }
+
+    // ✅ SOURCE FILTER
+    if ($request->source) {
+        $query->where('source', $request->source);
+    }
+
+    // ✅ SALES FILTER (Admin Only)
+    if ($request->assigned_to && !($user instanceof SalesTeam)) {
+        $query->where('assigned_to', $request->assigned_to);
+    }
+
+    // ✅ DATE FILTER
+    if ($request->start_date && $request->end_date) {
+        $query->whereBetween('created_at', [
+            $request->start_date,
+            $request->end_date
+        ]);
+    }
+
+    // ✅ STATUS FILTER (LATEST ONLY)
+    if ($request->status) {
+        $query->whereHas('latestStatus', function ($q) use ($request) {
+            $q->where('status_type', $request->status);
+        });
+    }
+
+    // ✅ PLACE FILTER THROUGH NEEDS
+    if ($request->place_id) {
+        $query->whereHas('needs', function ($q) use ($request) {
+            $q->where('place_id', $request->place_id);
+        });
+    }
+
+    // ✅ PROPERTY TYPE FILTER (Optional)
+    if ($request->property_type) {
+        $query->whereHas('needs', function ($q) use ($request) {
+            $q->where('property_type', $request->property_type);
+        });
+    }
+
+    // ✅ PAGINATE RESULTS
+    $leads = $query->paginate($perPage);
+
+    return response()->json($leads);
+}
     // ✅ STORE
     public function store(Request $request)
     {
@@ -160,8 +176,11 @@ class LeadController extends Controller
     {
         $user = $request->user();
 
-        $lead = Lead::with(['salesPerson', 'statusHistory.addedBy:sales_person_id,name'])
-            ->findOrFail($id);
+        $lead = Lead::with([
+            'salesPerson',
+            'statusHistory.addedBy:sales_person_id,name',
+            'needs.place' // ✅ Load needs with their respective places
+        ])->findOrFail($id);
 
         // ✅ Sales can only see their own lead
         if ($user instanceof SalesTeam && $lead->assigned_to !== $user->sales_person_id) {
@@ -334,8 +353,9 @@ class LeadController extends Controller
                 'phone_number' => $phone,
                 'email' => $row[2] ?? null,
                 'source' => $row[3] ?? null,
+                'company_name' => $row[4] ?? null,
                 'assigned_to' => $assignedTo,
-                'enquiry_description' => $row[4] ?? null,
+                'enquiry_description' => $row[5] ?? null,
                 'timestamp' => Carbon::now(),
                 'created_at' => Carbon::now(),
                 'updated_at' => Carbon::now(),
@@ -396,7 +416,7 @@ class LeadController extends Controller
 
         // ✅ DEFAULT COLUMNS
         if (empty($columns)) {
-            $columns = ['contact_person', 'phone', 'email', 'source', 'latest_status'];
+            $columns = ['contact_person', 'phone', 'email', 'source', 'company_name', 'latest_status'];
         }
 
         // ✅ COLUMN LABELS
@@ -405,7 +425,7 @@ class LeadController extends Controller
             'phone' => 'Phone',
             'email' => 'Email',
             'source' => 'Source',
-            'company' => 'Company',
+            'company_name' => 'Address',
             'latest_status' => "Latest Status"
         ];
 
@@ -478,9 +498,9 @@ class LeadController extends Controller
                                 $row[] = $lead->source ?? '';
                                 break;
 
-                            // case 'company':
-                            //     $row[] = $lead->company_name ?? '';
-                            //     break;
+                            case 'company_name':
+                                $row[] = $lead->company_name ?? '';
+                                break;
 
                             case 'latest_status':
                                 $row[] = optional($latestStatus)->status_type ?? '';
@@ -549,9 +569,9 @@ class LeadController extends Controller
                         $value = $lead->source ?? '';
                         break;
 
-                    // case 'company':
-                    //     $value = $lead->company_name ?? '';
-                    //     break;
+                    case 'company_name':
+                        $value = $lead->company_name ?? '';
+                        break;
                     case 'latest_status':
                         $value = optional($latestStatus)->status_type ?? '';
                         break;
