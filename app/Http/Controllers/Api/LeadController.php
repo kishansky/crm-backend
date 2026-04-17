@@ -20,79 +20,79 @@ use PhpOffice\PhpSpreadsheet\Cell\Coordinate;
 class LeadController extends Controller
 {
     // ✅ LIST WITH ROLE FILTER
-public function index(Request $request)
-{
-    $perPage = $request->per_page ?? 10;
-    $user = $request->user();
+    public function index(Request $request)
+    {
+        $perPage = $request->per_page ?? 10;
+        $user = $request->user();
 
-    // ✅ DEFINE QUERY WITH RELATIONSHIPS
-    $query = Lead::with([
-        'salesPerson',
-        'latestStatus.addedBy:sales_person_id,name',
-        'needs.place' // 🔥 Include needs with places
-    ])->latest();
+        // ✅ DEFINE QUERY WITH RELATIONSHIPS
+        $query = Lead::with([
+            'salesPerson',
+            'latestStatus.addedBy:sales_person_id,name',
+            'needs.place' // 🔥 Include needs with places
+        ])->latest();
 
-    // ✅ ROLE FILTER (Sales can view only their leads)
-    if ($user instanceof SalesTeam) {
-        $query->where('assigned_to', $user->sales_person_id);
+        // ✅ ROLE FILTER (Sales can view only their leads)
+        if ($user instanceof SalesTeam) {
+            $query->where('assigned_to', $user->sales_person_id);
+        }
+
+        // ✅ SEARCH FILTER
+        if ($request->search && strlen($request->search) >= 3) {
+            $search = $request->search;
+
+            $query->where(function ($q) use ($search) {
+                $q->where('company_name', 'like', "%$search%")
+                    ->orWhere('contact_person', 'like', "%$search%")
+                    ->orWhere('phone_number', 'like', "%$search%")
+                    ->orWhere('email', 'like', "%$search%");
+            });
+        }
+
+        // ✅ SOURCE FILTER
+        if ($request->source) {
+            $query->where('source', $request->source);
+        }
+
+        // ✅ SALES FILTER (Admin Only)
+        if ($request->assigned_to && !($user instanceof SalesTeam)) {
+            $query->where('assigned_to', $request->assigned_to);
+        }
+
+        // ✅ DATE FILTER
+        if ($request->start_date && $request->end_date) {
+            $query->whereBetween('created_at', [
+                $request->start_date,
+                $request->end_date
+            ]);
+        }
+
+        // ✅ STATUS FILTER (LATEST ONLY)
+        if ($request->status) {
+            $query->whereHas('latestStatus', function ($q) use ($request) {
+                $q->where('status_type', $request->status);
+            });
+        }
+
+        // ✅ PLACE FILTER THROUGH NEEDS
+        if ($request->place_id) {
+            $query->whereHas('needs', function ($q) use ($request) {
+                $q->where('place_id', $request->place_id);
+            });
+        }
+
+        // ✅ PROPERTY TYPE FILTER (Optional)
+        if ($request->property_type) {
+            $query->whereHas('needs', function ($q) use ($request) {
+                $q->where('property_type', $request->property_type);
+            });
+        }
+
+        // ✅ PAGINATE RESULTS
+        $leads = $query->paginate($perPage);
+
+        return response()->json($leads);
     }
-
-    // ✅ SEARCH FILTER
-    if ($request->search && strlen($request->search) >= 3) {
-        $search = $request->search;
-
-        $query->where(function ($q) use ($search) {
-            $q->where('company_name', 'like', "%$search%")
-                ->orWhere('contact_person', 'like', "%$search%")
-                ->orWhere('phone_number', 'like', "%$search%")
-                ->orWhere('email', 'like', "%$search%");
-        });
-    }
-
-    // ✅ SOURCE FILTER
-    if ($request->source) {
-        $query->where('source', $request->source);
-    }
-
-    // ✅ SALES FILTER (Admin Only)
-    if ($request->assigned_to && !($user instanceof SalesTeam)) {
-        $query->where('assigned_to', $request->assigned_to);
-    }
-
-    // ✅ DATE FILTER
-    if ($request->start_date && $request->end_date) {
-        $query->whereBetween('created_at', [
-            $request->start_date,
-            $request->end_date
-        ]);
-    }
-
-    // ✅ STATUS FILTER (LATEST ONLY)
-    if ($request->status) {
-        $query->whereHas('latestStatus', function ($q) use ($request) {
-            $q->where('status_type', $request->status);
-        });
-    }
-
-    // ✅ PLACE FILTER THROUGH NEEDS
-    if ($request->place_id) {
-        $query->whereHas('needs', function ($q) use ($request) {
-            $q->where('place_id', $request->place_id);
-        });
-    }
-
-    // ✅ PROPERTY TYPE FILTER (Optional)
-    if ($request->property_type) {
-        $query->whereHas('needs', function ($q) use ($request) {
-            $q->where('property_type', $request->property_type);
-        });
-    }
-
-    // ✅ PAGINATE RESULTS
-    $leads = $query->paginate($perPage);
-
-    return response()->json($leads);
-}
     // ✅ STORE
     public function store(Request $request)
     {
@@ -749,7 +749,8 @@ public function index(Request $request)
 
         $query = Lead::with([
             'salesPerson',
-            'latestStatus'
+            'latestStatus',
+            'needs.place'
         ]);
 
         // ✅ ROLE FILTER
@@ -757,7 +758,60 @@ public function index(Request $request)
             $query->where('assigned_to', $user->sales_person_id);
         }
 
-        // ✅ FILTER TYPE
+        /*
+    |--------------------------------------------------------------------------
+    | ADDITIONAL FILTERS (From Follow-Ups UI)
+    |--------------------------------------------------------------------------
+    */
+
+        // 🔍 SEARCH FILTER
+        if ($request->filled('search') && strlen($request->search) >= 2) {
+            $search = $request->search;
+            $query->where(function ($q) use ($search) {
+                $q->where('company_name', 'like', "%{$search}%")
+                    ->orWhere('contact_person', 'like', "%{$search}%")
+                    ->orWhere('phone_number', 'like', "%{$search}%")
+                    ->orWhere('email', 'like', "%{$search}%");
+            });
+        }
+
+        // 🌐 SOURCE FILTER
+        if ($request->filled('source')) {
+            $query->where('source', $request->source);
+        }
+
+        // 👤 SALES FILTER (Admin Only)
+        if ($request->filled('assigned_to') && !($user instanceof SalesTeam)) {
+            $query->where('assigned_to', $request->assigned_to);
+        }
+
+        // 📌 PLACE FILTER (Through Needs)
+        if ($request->filled('place_id')) {
+            $query->whereHas('needs', function ($q) use ($request) {
+                $q->where('place_id', $request->place_id);
+            });
+        }
+
+        // 📊 STATUS FILTER
+        if ($request->filled('status')) {
+            $query->whereHas('latestStatus', function ($q) use ($request) {
+                $q->where('status_type', $request->status);
+            });
+        }
+
+        // 📞 CALL STATUS FILTER
+        if ($request->filled('call_status')) {
+            $query->whereHas('latestStatus', function ($q) use ($request) {
+                $q->where('status_id', $request->call_status);
+            });
+        }
+
+        /*
+    |--------------------------------------------------------------------------
+    | FOLLOW-UP DATE FILTERS
+    |--------------------------------------------------------------------------
+    */
+
         if ($request->filter) {
             switch ($request->filter) {
 
@@ -765,8 +819,7 @@ public function index(Request $request)
                     $query->where(function ($q) {
                         $q->whereHas('latestStatus', function ($sub) {
                             $sub->whereDate('reschedule_time', now());
-                        })
-                            ->orWhereDoesntHave('latestStatus');
+                        })->orWhereDoesntHave('latestStatus');
                     });
                     break;
 
@@ -783,11 +836,8 @@ public function index(Request $request)
                     break;
 
                 case 'missed':
-                    $query->where(function ($q) {
-                        $q->whereHas('latestStatus', function ($sub) {
-                            $sub->whereDate('reschedule_time', '<', now());
-                        })
-                            ->orWhereDoesntHave('latestStatus');
+                    $query->whereHas('latestStatus', function ($q) {
+                        $q->whereDate('reschedule_time', '<', now());
                     });
                     break;
 
@@ -810,36 +860,74 @@ public function index(Request $request)
                     $query->where(function ($q) {
                         $q->whereHas('latestStatus', function ($sub) {
                             $sub->whereNotNull('reschedule_time');
-                        })
-                            ->orWhereDoesntHave('latestStatus');
+                        })->orWhereDoesntHave('latestStatus');
                     });
                     break;
             }
         } else {
-            // 🔹 Default: Show today's follow-ups including leads without status
-            $query->where(function ($q) {
-                $q->whereHas('latestStatus', function ($sub) {
-                    $sub->whereDate('reschedule_time', now());
-                })
-                    ->orWhereDoesntHave('latestStatus');
-            });
-        }
+    // Apply default filter only when no call_status is selected
+    if (!$request->filled('call_status')) {
+        $query->where(function ($q) {
+            $q->whereHas('latestStatus', function ($sub) {
+                $sub->whereDate('reschedule_time', now());
+            })->orWhereDoesntHave('latestStatus');
+        });
+    }
+}
 
-        // ✅ OPTIONAL CUSTOM DATE FILTER
-        if ($request->date) {
+        // 📅 OPTIONAL CUSTOM DATE FILTER
+        if ($request->filled('date')) {
             $query->whereHas('latestStatus', function ($q) use ($request) {
                 $q->whereDate('reschedule_time', $request->date);
             });
         }
 
+        /*
+    |--------------------------------------------------------------------------
+    | ORDERING LOGIC
+    |--------------------------------------------------------------------------
+    | 1. Upcoming follow-ups first
+    | 2. Then past follow-ups
+    | 3. Then leads without reschedule time
+    | 4. Ordered by nearest reschedule_time
+    */
+
+        $query->orderByRaw("
+        CASE
+            WHEN (
+                SELECT reschedule_time
+                FROM status_history
+                WHERE status_history.lead_id = leads_master.lead_id
+                AND status_history.deleted_at IS NULL
+                ORDER BY updated_at DESC
+                LIMIT 1
+            ) >= NOW() THEN 0
+            WHEN (
+                SELECT reschedule_time
+                FROM status_history
+                WHERE status_history.lead_id = leads_master.lead_id
+                AND status_history.deleted_at IS NULL
+                ORDER BY updated_at DESC
+                LIMIT 1
+            ) < NOW() THEN 1
+            ELSE 2
+        END
+    ");
+
+        // 🔹 Sort by nearest reschedule time
+        $query->orderByRaw("
+        (
+            SELECT reschedule_time
+            FROM status_history
+            WHERE status_history.lead_id = leads_master.lead_id
+            AND status_history.deleted_at IS NULL
+            ORDER BY updated_at DESC
+            LIMIT 1
+        ) ASC
+    ");
+
         return response()->json(
-            $query->orderBy(
-                StatusHistory::select('reschedule_time')
-                    ->whereColumn('lead_id', 'leads_master.lead_id')
-                    ->latest('updated_at')
-                    ->limit(1),
-                'desc'
-            )->paginate($perPage)
+            $query->paginate($perPage)
         );
     }
 
