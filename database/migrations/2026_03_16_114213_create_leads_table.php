@@ -13,28 +13,27 @@ return new class extends Migration
     {
         Schema::create('leads_master', function (Blueprint $table) {
 
-    $table->string('lead_id')->primary();
+            $table->string('lead_id')->primary();
 
-    $table->dateTime('timestamp');
-    $table->string('source')->nullable();
-    $table->string('company_name')->nullable();
-    $table->string('contact_person')->nullable();
+            $table->dateTime('timestamp');
+            $table->string('source')->nullable();
+            $table->string('company_name')->nullable();
+            $table->string('contact_person')->nullable();
 
-    $table->string('phone_number')->unique();
-    $table->string('email')->nullable();
+            $table->string('phone_number')->unique();
+            $table->string('email')->nullable();
 
-    $table->text('enquiry_description')->nullable();
+            $table->text('enquiry_description')->nullable();
 
-    $table->string('assigned_to')->nullable()->change();;
+            $table->string('assigned_to')->nullable()->change();;
 
-    $table->foreign('assigned_to')
-          ->references('sales_person_id')
-          ->on('sales_team');
+            $table->foreign('assigned_to')
+                ->references('sales_person_id')
+                ->on('sales_team');
 
-    $table->timestamps();
-    $table->softDeletes();
-
-});
+            $table->timestamps();
+            $table->softDeletes();
+        });
     }
 
     /**
