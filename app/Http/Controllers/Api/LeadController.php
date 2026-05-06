@@ -106,50 +106,50 @@ class LeadController extends Controller
         return response()->json($leads);
     }
     // ✅ STORE
-public function store(Request $request)
-{
-    // ✅ Validate request
-    $request->validate([
-        'phone_number' => 'required|string',
-    ]);
+    public function store(Request $request)
+    {
+        // ✅ Validate request
+        $request->validate([
+            'phone_number' => 'required|string',
+        ]);
 
-    // 🔹 Clean numbers ONLY for checking
-    $numbers = collect(explode(',', $request->phone_number))
-        ->map(fn($n) => trim($n))
-        ->filter(fn($n) => $n !== '')
-        ->values()
-        ->toArray();
+        // 🔹 Clean numbers ONLY for checking
+        $numbers = collect(explode(',', $request->phone_number))
+            ->map(fn($n) => trim($n))
+            ->filter(fn($n) => $n !== '')
+            ->values()
+            ->toArray();
 
-    // 🔍 Check if ANY number already exists (exact match)
-    foreach ($numbers as $number) {
-        if (Lead::where('phone_number', 'LIKE', "%$number%")->exists()) {
-            return response()->json([
-                'status' => false,
-                'message' => "Phone number $number already registered."
-            ], 409);
+        // 🔍 Check if ANY number already exists (exact match)
+        foreach ($numbers as $number) {
+            if (Lead::where('phone_number', 'LIKE', "%$number%")->exists()) {
+                return response()->json([
+                    'status' => false,
+                    'message' => "Phone number $number already registered."
+                ], 409);
+            }
         }
+
+        $data = $request->all();
+
+        // ❗ IMPORTANT: save ORIGINAL input (with spaces if any)
+        $data['phone_number'] = $request->phone_number;
+
+        // ✅ Fix datetime format
+        if ($request->timestamp) {
+            $data['timestamp'] = Carbon::parse($request->timestamp)
+                ->format('Y-m-d H:i:s');
+        }
+
+        // ✅ Create lead
+        $lead = Lead::create($data);
+
+        return response()->json([
+            'status' => true,
+            'message' => 'Lead created successfully.',
+            'data' => $lead
+        ], 201);
     }
-
-    $data = $request->all();
-
-    // ❗ IMPORTANT: save ORIGINAL input (with spaces if any)
-    $data['phone_number'] = $request->phone_number;
-
-    // ✅ Fix datetime format
-    if ($request->timestamp) {
-        $data['timestamp'] = Carbon::parse($request->timestamp)
-            ->format('Y-m-d H:i:s');
-    }
-
-    // ✅ Create lead
-    $lead = Lead::create($data);
-
-    return response()->json([
-        'status' => true,
-        'message' => 'Lead created successfully.',
-        'data' => $lead
-    ], 201);
-}
 
     public function storeFromForm(Request $request)
     {
@@ -329,43 +329,54 @@ public function store(Request $request)
         $skipped = 0;
         $duplicates = 0;
 
-        // 🔍 Fetch existing phone numbers once for performance
+        // 🔍 Fetch existing phone numbers once
         $existingPhones = DB::table('leads_master')
             ->pluck('phone_number')
             ->map(fn($phone) => trim($phone))
             ->toArray();
 
-        $existingPhones = array_flip($existingPhones); // Fast lookup
+        $existingPhones = array_flip($existingPhones);
 
         foreach ($rows as $index => $row) {
 
-            // Skip header row
-            if ($index === 0) {
-                continue;
-            }
+            // Skip header
+            if ($index === 0) continue;
 
             $contact = trim($row[0] ?? '');
             $phone = trim($row[1] ?? '');
 
-            // Skip empty phone numbers
+            // ❌ Skip empty
             if ($phone === '') {
                 $skipped++;
                 continue;
             }
 
-            // ✅ Clean Excel formatting issues
+            // ✅ FIX: Handle scientific notation from Excel
+            if (is_numeric($phone)) {
+                $phone = number_format($phone, 0, '', '');
+            }
+
+            // ✅ Remove Excel weird formatting
             $phone = preg_replace('/^="(.*)"$/', '$1', $phone);
             $phone = ltrim($phone, "'");
-            $phone = trim($phone);
 
-            // 🔁 Skip duplicate phone numbers (existing in DB)
+            // ✅ Keep only digits (remove +, spaces, etc.)
+            $phone = preg_replace('/\D/', '', $phone);
+
+            // ❌ Skip invalid (too short)
+            if (strlen($phone) < 8) {
+                $skipped++;
+                continue;
+            }
+
+            // 🔁 Skip duplicates (DB)
             if (isset($existingPhones[$phone])) {
                 $duplicates++;
                 $skipped++;
                 continue;
             }
 
-            // Prevent duplicates within the same file
+            // Prevent duplicates inside file
             $existingPhones[$phone] = true;
 
             $insertData[] = [
@@ -383,12 +394,16 @@ public function store(Request $request)
             ];
         }
 
-        // 🚀 Bulk Insert for Better Performance
+        // 🚀 Bulk insert
         if (!empty($insertData)) {
             DB::table('leads_master')->insert($insertData);
         }
 
-        return response()->json(['message' => $skipped > 0 ? "Imported successfully ($skipped rows $duplicates Duplicates)" : "Imported successfully"]);
+        return response()->json([
+            'message' => $skipped > 0
+                ? "Imported successfully ($skipped rows skipped, $duplicates duplicates)"
+                : "Imported successfully"
+        ]);
     }
 
     public function bulkAssign(Request $request)
@@ -465,6 +480,22 @@ public function store(Request $request)
             $query->whereBetween('created_at', [$startDate, $endDate]);
         }
 
+        // ✅ STATUS FILTER
+        if ($request->status) {
+
+            $query->where(function ($q) use ($request) {
+
+                // latest status
+                $q->whereHas('latestStatus', function ($sub) use ($request) {
+                    $sub->where('status_type', $request->status);
+                })
+
+                    // any old status history
+                    ->orWhereHas('statusHistory', function ($sub) use ($request) {
+                        $sub->where('status_type', $request->status);
+                    });
+            });
+        }
         $query->latest();
 
         // ✅ TOTAL BEFORE LIMIT
@@ -774,6 +805,11 @@ public function store(Request $request)
             'needs.place'
         ]);
 
+        // ✅ ONLY FOLLOW-UPS (GLOBAL FILTER)
+        $query->whereHas('latestStatus', function ($q) {
+            $q->whereNotNull('reschedule_time');
+        });
+
         // ✅ ROLE FILTER
         if ($user instanceof SalesTeam) {
             $query->where('assigned_to', $user->sales_person_id);
@@ -781,11 +817,11 @@ public function store(Request $request)
 
         /*
     |--------------------------------------------------------------------------
-    | ADDITIONAL FILTERS (From Follow-Ups UI)
+    | ADDITIONAL FILTERS
     |--------------------------------------------------------------------------
     */
 
-        // 🔍 SEARCH FILTER
+        // 🔍 SEARCH
         if ($request->filled('search') && strlen($request->search) >= 2) {
             $search = $request->search;
             $query->where(function ($q) use ($search) {
@@ -796,31 +832,31 @@ public function store(Request $request)
             });
         }
 
-        // 🌐 SOURCE FILTER
+        // 🌐 SOURCE
         if ($request->filled('source')) {
             $query->where('source', $request->source);
         }
 
-        // 👤 SALES FILTER (Admin Only)
+        // 👤 SALES (Admin only)
         if ($request->filled('assigned_to') && !($user instanceof SalesTeam)) {
             $query->where('assigned_to', $request->assigned_to);
         }
 
-        // 📌 PLACE FILTER (Through Needs)
+        // 📌 PLACE
         if ($request->filled('place_id')) {
             $query->whereHas('needs', function ($q) use ($request) {
                 $q->where('place_id', $request->place_id);
             });
         }
 
-        // 📊 STATUS FILTER
+        // 📊 STATUS TYPE
         if ($request->filled('status')) {
             $query->whereHas('latestStatus', function ($q) use ($request) {
                 $q->where('status_type', $request->status);
             });
         }
 
-        // 📞 CALL STATUS FILTER
+        // 📞 CALL STATUS
         if ($request->filled('call_status')) {
             $query->whereHas('latestStatus', function ($q) use ($request) {
                 $q->where('status_id', $request->call_status);
@@ -837,10 +873,8 @@ public function store(Request $request)
             switch ($request->filter) {
 
                 case 'today':
-                    $query->where(function ($q) {
-                        $q->whereHas('latestStatus', function ($sub) {
-                            $sub->whereDate('reschedule_time', now());
-                        })->orWhereDoesntHave('latestStatus');
+                    $query->whereHas('latestStatus', function ($q) {
+                        $q->whereDate('reschedule_time', now());
                     });
                     break;
 
@@ -858,7 +892,7 @@ public function store(Request $request)
 
                 case 'missed':
                     $query->whereHas('latestStatus', function ($q) {
-                        $q->whereDate('reschedule_time', '<', now());
+                        $q->where('reschedule_time', '<', now());
                     });
                     break;
 
@@ -878,25 +912,17 @@ public function store(Request $request)
                     break;
 
                 case 'all':
-                    $query->where(function ($q) {
-                        $q->whereHas('latestStatus', function ($sub) {
-                            $sub->whereNotNull('reschedule_time');
-                        })->orWhereDoesntHave('latestStatus');
-                    });
+                    // already filtered globally, no extra condition needed
                     break;
             }
         } else {
-            // Apply default filter only when no call_status is selected
-            if (!$request->filled('call_status')) {
-                $query->where(function ($q) {
-                    $q->whereHas('latestStatus', function ($sub) {
-                        $sub->whereDate('reschedule_time', now());
-                    })->orWhereDoesntHave('latestStatus');
-                });
-            }
+            // default → today follow-ups only
+            $query->whereHas('latestStatus', function ($q) {
+                $q->whereDate('reschedule_time', now());
+            });
         }
 
-        // 📅 OPTIONAL CUSTOM DATE FILTER
+        // 📅 CUSTOM DATE
         if ($request->filled('date')) {
             $query->whereHas('latestStatus', function ($q) use ($request) {
                 $q->whereDate('reschedule_time', $request->date);
@@ -905,37 +931,10 @@ public function store(Request $request)
 
         /*
     |--------------------------------------------------------------------------
-    | ORDERING LOGIC
+    | ORDERING (OPTIMIZED)
     |--------------------------------------------------------------------------
-    | 1. Upcoming follow-ups first
-    | 2. Then past follow-ups
-    | 3. Then leads without reschedule time
-    | 4. Ordered by nearest reschedule_time
     */
 
-        $query->orderByRaw("
-        CASE
-            WHEN (
-                SELECT reschedule_time
-                FROM status_history
-                WHERE status_history.lead_id = leads_master.lead_id
-                AND status_history.deleted_at IS NULL
-                ORDER BY updated_at DESC
-                LIMIT 1
-            ) >= NOW() THEN 0
-            WHEN (
-                SELECT reschedule_time
-                FROM status_history
-                WHERE status_history.lead_id = leads_master.lead_id
-                AND status_history.deleted_at IS NULL
-                ORDER BY updated_at DESC
-                LIMIT 1
-            ) < NOW() THEN 1
-            ELSE 2
-        END
-    ");
-
-        // 🔹 Sort by nearest reschedule time
         $query->orderByRaw("
         (
             SELECT reschedule_time
@@ -946,6 +945,73 @@ public function store(Request $request)
             LIMIT 1
         ) ASC
     ");
+
+        return response()->json(
+            $query->paginate($perPage)
+        );
+    }
+
+    public function newLeads(Request $request)
+    {
+        $perPage = $request->per_page ?? 10;
+        $user = $request->user();
+
+        $query = Lead::with([
+            'salesPerson',
+            'latestStatus',
+            'needs.place'
+        ]);
+
+        // ✅ ONLY NEW LEADS (NO FOLLOW-UP)
+        $query->whereDoesntHave('latestStatus');
+
+        // ✅ ROLE FILTER
+        if ($user instanceof SalesTeam) {
+            $query->where('assigned_to', $user->sales_person_id);
+        }
+
+        /*
+    |--------------------------------------------------------------------------
+    | OPTIONAL FILTERS
+    |--------------------------------------------------------------------------
+    */
+
+        // 🔍 SEARCH
+        if ($request->filled('search') && strlen($request->search) >= 2) {
+            $search = $request->search;
+            $query->where(function ($q) use ($search) {
+                $q->where('company_name', 'like', "%{$search}%")
+                    ->orWhere('contact_person', 'like', "%{$search}%")
+                    ->orWhere('phone_number', 'like', "%{$search}%")
+                    ->orWhere('email', 'like', "%{$search}%");
+            });
+        }
+
+        // 🌐 SOURCE
+        if ($request->filled('source')) {
+            $query->where('source', $request->source);
+        }
+
+        // 👤 SALES (Admin only)
+        if ($request->filled('assigned_to') && !($user instanceof SalesTeam)) {
+            $query->where('assigned_to', $request->assigned_to);
+        }
+
+        // 📌 PLACE
+        if ($request->filled('place_id')) {
+            $query->whereHas('needs', function ($q) use ($request) {
+                $q->where('place_id', $request->place_id);
+            });
+        }
+
+        /*
+    |--------------------------------------------------------------------------
+    | ORDERING
+    |--------------------------------------------------------------------------
+    */
+
+        // 🔹 Latest leads first
+        $query->latest('created_at');
 
         return response()->json(
             $query->paginate($perPage)

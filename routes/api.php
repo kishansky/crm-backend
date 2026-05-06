@@ -60,6 +60,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/team-status-report', [LeadController::class, 'teamStatusReport']);
     Route::get('/dashboard-stats', [LeadController::class, 'dashboardStats']);
     Route::get('/follow-ups', [LeadController::class, 'followUps']);
+    Route::get('/new-leads', [LeadController::class, 'newLeads']);
 
     // Status List for Dropdowns
     Route::get('/statuses', [StatusController::class, 'index']);
