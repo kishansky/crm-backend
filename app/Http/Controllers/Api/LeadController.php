@@ -16,6 +16,7 @@ use PhpOffice\PhpSpreadsheet\Spreadsheet;
 use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
 use PhpOffice\PhpSpreadsheet\Cell\DataType;
 use PhpOffice\PhpSpreadsheet\Cell\Coordinate;
+use Illuminate\Support\Facades\Cache;
 
 class LeadController extends Controller
 {
@@ -47,7 +48,8 @@ class LeadController extends Controller
                 $q->where('company_name', 'like', "%$search%")
                     ->orWhere('contact_person', 'like', "%$search%")
                     ->orWhere('phone_number', 'like', "%$search%")
-                    ->orWhere('email', 'like', "%$search%");
+                    ->orWhere('email', 'like', "%$search%")
+                    ->orWhere('source', 'like', "%$search%");
 
                 // 📅 Date search (created_at)
                 try {
@@ -710,9 +712,12 @@ class LeadController extends Controller
         $startOfWeek = Carbon::now()->startOfWeek();
         $startOfMonth = Carbon::now()->startOfMonth();
 
-        // ==========================
-        // 🔹 LEADS QUERY
-        // ==========================
+        /*
+    |--------------------------------------------------------------------------
+    | 🔹 LEADS QUERY
+    |--------------------------------------------------------------------------
+    */
+
         $leadQuery = Lead::query();
 
         // Restrict sales users to their own leads
@@ -720,7 +725,12 @@ class LeadController extends Controller
             $leadQuery->where('assigned_to', $user->sales_person_id);
         }
 
-        // ✅ Lead Statistics
+        /*
+    |--------------------------------------------------------------------------
+    | 🔹 LEAD STATISTICS
+    |--------------------------------------------------------------------------
+    */
+
         $totalLeads = (clone $leadQuery)->count();
 
         $todayLeads = (clone $leadQuery)
@@ -735,9 +745,12 @@ class LeadController extends Controller
             ->whereDate('created_at', '>=', $startOfMonth)
             ->count();
 
-        // ==========================
-        // 🔹 STATUS QUERY
-        // ==========================
+        /*
+    |--------------------------------------------------------------------------
+    | 🔹 TODAY STATUS QUERY
+    |--------------------------------------------------------------------------
+    */
+
         $statusQuery = DB::table('status_history')
             ->join('statuses', 'status_history.status_id', '=', 'statuses.id')
             ->join('leads_master', 'status_history.lead_id', '=', 'leads_master.lead_id')
@@ -746,13 +759,20 @@ class LeadController extends Controller
 
         // Restrict sales users to their own activities
         if ($user instanceof SalesTeam) {
+
             $statusQuery->where(function ($q) use ($user) {
+
                 $q->where('leads_master.assigned_to', $user->sales_person_id)
                     ->orWhere('status_history.added_by', $user->sales_person_id);
             });
         }
 
-        // Fetch today's status counts
+        /*
+    |--------------------------------------------------------------------------
+    | 🔹 TODAY STATUS COUNTS
+    |--------------------------------------------------------------------------
+    */
+
         $todayStatusCounts = $statusQuery
             ->select(
                 'statuses.id',
@@ -764,33 +784,208 @@ class LeadController extends Controller
             ->get()
             ->keyBy('id');
 
-        // Fetch all active statuses
+        /*
+    |--------------------------------------------------------------------------
+    | 🔥 ALL TIME STATUS COUNTS (CACHED)
+    |--------------------------------------------------------------------------
+    */
+
+        $allTimeStatusCounts = Cache::remember(
+
+            $user instanceof SalesTeam
+                ? 'all_time_status_counts_' . $user->sales_person_id
+                : 'all_time_status_counts_admin',
+
+            now()->addHours(6),
+
+            function () use ($user) {
+
+                $query = DB::table('leads_master as lm')
+
+                    ->join('status_history as sh', 'sh.history_id', '=', DB::raw('(
+                    SELECT sh2.history_id
+                    FROM status_history sh2
+                    WHERE sh2.lead_id = lm.lead_id
+                    AND sh2.deleted_at IS NULL
+                    ORDER BY sh2.history_id DESC
+                    LIMIT 1
+                )'))
+
+                    ->join('statuses', 'sh.status_id', '=', 'statuses.id');
+
+                if ($user instanceof SalesTeam) {
+
+                    $query->where(
+                        'lm.assigned_to',
+                        $user->sales_person_id
+                    );
+                }
+
+                return $query
+                    ->select(
+                        'statuses.id',
+                        DB::raw('COUNT(*) as total_count')
+                    )
+                    ->groupBy('statuses.id')
+                    ->pluck('total_count', 'statuses.id');
+            }
+        );
+
+        /*
+    |--------------------------------------------------------------------------
+    | 🔥 ALL TIME PLACE COUNTS (CACHED)
+    |--------------------------------------------------------------------------
+    */
+
+        $allTimePlaceCounts = Cache::remember(
+
+            $user instanceof SalesTeam
+                ? 'all_time_place_counts_' . $user->sales_person_id
+                : 'all_time_place_counts_admin',
+
+            now()->addHours(6),
+
+            function () use ($user) {
+
+                $query = DB::table('needs')
+                    ->join('places', 'needs.place_id', '=', 'places.id')
+                    ->join('leads_master', 'needs.lead_id', '=', 'leads_master.lead_id');
+
+                if ($user instanceof SalesTeam) {
+
+                    $query->where(
+                        'leads_master.assigned_to',
+                        $user->sales_person_id
+                    );
+                }
+
+                return $query
+                    ->select(
+                        'places.id',
+                        'places.name',
+                        DB::raw('COUNT(*) as total_count')
+                    )
+                    ->groupBy('places.id', 'places.name')
+                    ->get();
+            }
+        );
+
+        /*
+|--------------------------------------------------------------------------
+| 🔥 ALL TIME LATEST STATUS COUNTS (CACHED)
+|--------------------------------------------------------------------------
+*/
+
+        $allTimeLatestStatusCounts = Cache::remember(
+
+            $user instanceof SalesTeam
+                ? 'all_time_latest_status_counts_' . $user->sales_person_id
+                : 'all_time_latest_status_counts_admin',
+
+            now()->addHours(6),
+
+            function () use ($user) {
+
+                $query = DB::table('leads_master as lm')
+
+                    ->join('status_history as sh', 'sh.history_id', '=', DB::raw('(
+                SELECT sh2.history_id
+                FROM status_history sh2
+                WHERE sh2.lead_id = lm.lead_id
+                AND sh2.deleted_at IS NULL
+                ORDER BY sh2.history_id DESC
+                LIMIT 1
+            )'))
+
+                    ->join('statuses', 'sh.status_id', '=', 'statuses.id');
+
+                if ($user instanceof SalesTeam) {
+
+                    $query->where(
+                        'lm.assigned_to',
+                        $user->sales_person_id
+                    );
+                }
+
+                return $query
+                    ->select(
+                        'statuses.id',
+                        'statuses.name',
+                        'statuses.color',
+                        DB::raw('COUNT(*) as total_count')
+                    )
+                    ->groupBy(
+                        'statuses.id',
+                        'statuses.name',
+                        'statuses.color'
+                    )
+                    ->orderBy('statuses.orders')
+                    ->get();
+            }
+        );
+
+        /*
+    |--------------------------------------------------------------------------
+    | 🔹 FETCH ALL ACTIVE STATUSES
+    |--------------------------------------------------------------------------
+    */
+
         $allStatuses = DB::table('statuses')
             ->where('is_active', 1)
+            ->orderBy('orders')
             ->select('id', 'name', 'color')
             ->get();
 
-        // Merge with zero counts
-        $statusCounts = $allStatuses->map(function ($status) use ($todayStatusCounts) {
+        /*
+    |--------------------------------------------------------------------------
+    | 🔹 MERGE TODAY + ALL TIME COUNTS
+    |--------------------------------------------------------------------------
+    */
+
+        $statusCounts = $allStatuses->map(function ($status) use (
+            $todayStatusCounts,
+            $allTimeStatusCounts
+        ) {
+
             return [
+
                 'status_id' => $status->id,
+
                 'status_name' => $status->name,
+
                 'status_color' => $status->color,
+
+                // ✅ TODAY COUNT
                 'count' => isset($todayStatusCounts[$status->id])
                     ? (int) $todayStatusCounts[$status->id]->count
                     : 0,
             ];
         })->values();
 
-        // ==========================
-        // 🔹 RESPONSE
-        // ==========================
+        /*
+    |--------------------------------------------------------------------------
+    | 🔹 RESPONSE
+    |--------------------------------------------------------------------------
+    */
+
         return response()->json([
+
             'total_leads' => $totalLeads,
+
             'today_leads' => $todayLeads,
+
             'weekly_leads' => $weeklyLeads,
+
             'monthly_leads' => $monthlyLeads,
+
+            // today status counts
             'status_counts' => $statusCounts,
+
+            // all time latest status counts
+            'all_time_latest_status_counts' => $allTimeLatestStatusCounts,
+
+            // all time place counts
+            'place_counts' => $allTimePlaceCounts,
         ]);
     }
 
@@ -805,133 +1000,326 @@ class LeadController extends Controller
             'needs.place'
         ]);
 
-        // ✅ ONLY FOLLOW-UPS (GLOBAL FILTER)
-        $query->whereHas('latestStatus', function ($q) {
-            $q->whereNotNull('reschedule_time');
+        /*
+    |--------------------------------------------------------------------------
+    | ONLY FOLLOW-UPS (LATEST STATUS MUST HAVE RESCHEDULE TIME)
+    |--------------------------------------------------------------------------
+    */
+
+        $query->whereIn('lead_id', function ($sub) {
+
+            $sub->select('lm.lead_id')
+                ->from('leads_master as lm')
+
+                ->join('status_history as sh', 'sh.history_id', '=', DB::raw('(
+                SELECT sh2.history_id
+                FROM status_history sh2
+                WHERE sh2.lead_id = lm.lead_id
+                AND sh2.deleted_at IS NULL
+                ORDER BY sh2.history_id DESC
+                LIMIT 1
+            )'))
+
+                ->whereNotNull('sh.reschedule_time');
         });
 
-        // ✅ ROLE FILTER
+        /*
+    |--------------------------------------------------------------------------
+    | ROLE FILTER
+    |--------------------------------------------------------------------------
+    */
+
         if ($user instanceof SalesTeam) {
             $query->where('assigned_to', $user->sales_person_id);
         }
 
         /*
     |--------------------------------------------------------------------------
-    | ADDITIONAL FILTERS
+    | SEARCH
     |--------------------------------------------------------------------------
     */
 
-        // 🔍 SEARCH
         if ($request->filled('search') && strlen($request->search) >= 2) {
+
             $search = $request->search;
+
             $query->where(function ($q) use ($search) {
+
                 $q->where('company_name', 'like', "%{$search}%")
                     ->orWhere('contact_person', 'like', "%{$search}%")
                     ->orWhere('phone_number', 'like', "%{$search}%")
-                    ->orWhere('email', 'like', "%{$search}%");
+                    ->orWhere('email', 'like', "%{$search}%")
+                    ->orWhere('source', 'like', "%{$search}%");
             });
         }
 
-        // 🌐 SOURCE
+        /*
+    |--------------------------------------------------------------------------
+    | SOURCE
+    |--------------------------------------------------------------------------
+    */
+
         if ($request->filled('source')) {
             $query->where('source', $request->source);
         }
 
-        // 👤 SALES (Admin only)
-        if ($request->filled('assigned_to') && !($user instanceof SalesTeam)) {
+        /*
+    |--------------------------------------------------------------------------
+    | SALES PERSON
+    |--------------------------------------------------------------------------
+    */
+
+        if (
+            $request->filled('assigned_to') &&
+            !($user instanceof SalesTeam)
+        ) {
             $query->where('assigned_to', $request->assigned_to);
         }
 
-        // 📌 PLACE
+        /*
+    |--------------------------------------------------------------------------
+    | PLACE
+    |--------------------------------------------------------------------------
+    */
+
         if ($request->filled('place_id')) {
+
             $query->whereHas('needs', function ($q) use ($request) {
+
                 $q->where('place_id', $request->place_id);
             });
         }
 
-        // 📊 STATUS TYPE
-        if ($request->filled('status')) {
-            $query->whereHas('latestStatus', function ($q) use ($request) {
-                $q->where('status_type', $request->status);
-            });
-        }
+        /*
+    |--------------------------------------------------------------------------
+    | STATUS TYPE
+    |--------------------------------------------------------------------------
+    */
 
-        // 📞 CALL STATUS
-        if ($request->filled('call_status')) {
-            $query->whereHas('latestStatus', function ($q) use ($request) {
-                $q->where('status_id', $request->call_status);
+        if ($request->filled('status')) {
+
+            $query->whereIn('lead_id', function ($sub) use ($request) {
+
+                $sub->select('lm.lead_id')
+                    ->from('leads_master as lm')
+
+                    ->join('status_history as sh', 'sh.history_id', '=', DB::raw('(
+                    SELECT sh2.history_id
+                    FROM status_history sh2
+                    WHERE sh2.lead_id = lm.lead_id
+                    AND sh2.deleted_at IS NULL
+                    ORDER BY sh2.history_id DESC
+                    LIMIT 1
+                )'))
+
+                    ->where('sh.status_type', $request->status);
             });
         }
 
         /*
     |--------------------------------------------------------------------------
-    | FOLLOW-UP DATE FILTERS
+    | CALL STATUS
+    |--------------------------------------------------------------------------
+    */
+
+        if (
+            isset($request->call_status) &&
+            trim($request->call_status) !== ''
+        ) {
+
+            $callStatus = (int) $request->call_status;
+
+            $query->whereIn('lead_id', function ($sub) use ($callStatus) {
+
+                $sub->select('lm.lead_id')
+                    ->from('leads_master as lm')
+
+                    ->join('status_history as sh', 'sh.history_id', '=', DB::raw('(
+                    SELECT sh2.history_id
+                    FROM status_history sh2
+                    WHERE sh2.lead_id = lm.lead_id
+                    AND sh2.deleted_at IS NULL
+                    ORDER BY sh2.history_id DESC
+                    LIMIT 1
+                )'))
+
+                    ->where('sh.status_id', $callStatus);
+            });
+        }
+
+        /*
+    |--------------------------------------------------------------------------
+    | DATE FILTERS
     |--------------------------------------------------------------------------
     */
 
         if ($request->filter) {
+
             switch ($request->filter) {
 
                 case 'today':
-                    $query->whereHas('latestStatus', function ($q) {
-                        $q->whereDate('reschedule_time', now());
+
+                    $query->whereIn('lead_id', function ($sub) {
+
+                        $sub->select('lm.lead_id')
+                            ->from('leads_master as lm')
+
+                            ->join('status_history as sh', 'sh.history_id', '=', DB::raw('(
+                            SELECT sh2.history_id
+                            FROM status_history sh2
+                            WHERE sh2.lead_id = lm.lead_id
+                            AND sh2.deleted_at IS NULL
+                            ORDER BY sh2.history_id DESC
+                            LIMIT 1
+                        )'))
+
+                            ->whereDate('sh.reschedule_time', now());
                     });
+
                     break;
 
                 case 'yesterday':
-                    $query->whereHas('latestStatus', function ($q) {
-                        $q->whereDate('reschedule_time', now()->subDay());
+
+                    $query->whereIn('lead_id', function ($sub) {
+
+                        $sub->select('lm.lead_id')
+                            ->from('leads_master as lm')
+
+                            ->join('status_history as sh', 'sh.history_id', '=', DB::raw('(
+                            SELECT sh2.history_id
+                            FROM status_history sh2
+                            WHERE sh2.lead_id = lm.lead_id
+                            AND sh2.deleted_at IS NULL
+                            ORDER BY sh2.history_id DESC
+                            LIMIT 1
+                        )'))
+
+                            ->whereDate('sh.reschedule_time', now()->subDay());
                     });
+
                     break;
 
                 case 'tomorrow':
-                    $query->whereHas('latestStatus', function ($q) {
-                        $q->whereDate('reschedule_time', now()->addDay());
+
+                    $query->whereIn('lead_id', function ($sub) {
+
+                        $sub->select('lm.lead_id')
+                            ->from('leads_master as lm')
+
+                            ->join('status_history as sh', 'sh.history_id', '=', DB::raw('(
+                            SELECT sh2.history_id
+                            FROM status_history sh2
+                            WHERE sh2.lead_id = lm.lead_id
+                            AND sh2.deleted_at IS NULL
+                            ORDER BY sh2.history_id DESC
+                            LIMIT 1
+                        )'))
+
+                            ->whereDate('sh.reschedule_time', now()->addDay());
                     });
+
                     break;
 
                 case 'missed':
-                    $query->whereHas('latestStatus', function ($q) {
-                        $q->where('reschedule_time', '<', now());
+
+                    $query->whereIn('lead_id', function ($sub) {
+
+                        $sub->select('lm.lead_id')
+                            ->from('leads_master as lm')
+
+                            ->join('status_history as sh', 'sh.history_id', '=', DB::raw('(
+                            SELECT sh2.history_id
+                            FROM status_history sh2
+                            WHERE sh2.lead_id = lm.lead_id
+                            AND sh2.deleted_at IS NULL
+                            ORDER BY sh2.history_id DESC
+                            LIMIT 1
+                        )'))
+
+                            ->where('sh.reschedule_time', '<', now());
                     });
+
                     break;
 
                 case 'week':
-                    $query->whereHas('latestStatus', function ($q) {
-                        $q->whereBetween('reschedule_time', [
-                            now(),
-                            now()->endOfWeek()
-                        ]);
+
+                    $query->whereIn('lead_id', function ($sub) {
+
+                        $sub->select('lm.lead_id')
+                            ->from('leads_master as lm')
+
+                            ->join('status_history as sh', 'sh.history_id', '=', DB::raw('(
+                            SELECT sh2.history_id
+                            FROM status_history sh2
+                            WHERE sh2.lead_id = lm.lead_id
+                            AND sh2.deleted_at IS NULL
+                            ORDER BY sh2.history_id DESC
+                            LIMIT 1
+                        )'))
+
+                            ->whereBetween('sh.reschedule_time', [
+                                now(),
+                                now()->endOfWeek()
+                            ]);
                     });
+
                     break;
 
                 case 'upcoming':
-                    $query->whereHas('latestStatus', function ($q) {
-                        $q->where('reschedule_time', '>', now());
+
+                    $query->whereIn('lead_id', function ($sub) {
+
+                        $sub->select('lm.lead_id')
+                            ->from('leads_master as lm')
+
+                            ->join('status_history as sh', 'sh.history_id', '=', DB::raw('(
+                            SELECT sh2.history_id
+                            FROM status_history sh2
+                            WHERE sh2.lead_id = lm.lead_id
+                            AND sh2.deleted_at IS NULL
+                            ORDER BY sh2.history_id DESC
+                            LIMIT 1
+                        )'))
+
+                            ->where('sh.reschedule_time', '>', now());
                     });
+
                     break;
 
                 case 'all':
-                    // already filtered globally, no extra condition needed
                     break;
             }
-        } else {
-            // default → today follow-ups only
-            $query->whereHas('latestStatus', function ($q) {
-                $q->whereDate('reschedule_time', now());
-            });
         }
 
-        // 📅 CUSTOM DATE
+        /*
+    |--------------------------------------------------------------------------
+    | CUSTOM DATE
+    |--------------------------------------------------------------------------
+    */
+
         if ($request->filled('date')) {
-            $query->whereHas('latestStatus', function ($q) use ($request) {
-                $q->whereDate('reschedule_time', $request->date);
+
+            $query->whereIn('lead_id', function ($sub) use ($request) {
+
+                $sub->select('lm.lead_id')
+                    ->from('leads_master as lm')
+
+                    ->join('status_history as sh', 'sh.history_id', '=', DB::raw('(
+                    SELECT sh2.history_id
+                    FROM status_history sh2
+                    WHERE sh2.lead_id = lm.lead_id
+                    AND sh2.deleted_at IS NULL
+                    ORDER BY sh2.history_id DESC
+                    LIMIT 1
+                )'))
+
+                    ->whereDate('sh.reschedule_time', $request->date);
             });
         }
 
         /*
     |--------------------------------------------------------------------------
-    | ORDERING (OPTIMIZED)
+    | ORDERING
     |--------------------------------------------------------------------------
     */
 
@@ -941,7 +1329,7 @@ class LeadController extends Controller
             FROM status_history
             WHERE status_history.lead_id = leads_master.lead_id
             AND status_history.deleted_at IS NULL
-            ORDER BY updated_at DESC
+            ORDER BY history_id DESC
             LIMIT 1
         ) ASC
     ");

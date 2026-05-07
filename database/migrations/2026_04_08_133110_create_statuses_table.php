@@ -12,6 +12,7 @@ return new class extends Migration
             $table->string('name');        // Interested, Follow Up
             $table->string('color')->nullable(); // green, red, yellow or hex
             $table->boolean('is_active')->default(true);
+            $table->string('orders');
             $table->timestamps();
         });
     }

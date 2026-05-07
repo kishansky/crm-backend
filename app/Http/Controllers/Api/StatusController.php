@@ -12,7 +12,9 @@ class StatusController extends Controller
     // ✅ Anyone can view
     public function index(Request $request)
     {
-        return Status::where('is_active', true)->get();
+        return Status::where('is_active', true)
+            ->orderBy('orders', 'asc')
+            ->get();
     }
 
     // ❌ Admin only
@@ -26,7 +28,7 @@ class StatusController extends Controller
             ], 403);
         }
 
-        $status = Status::create($request->only('name', 'color'));
+        $status = Status::create($request->only('name', 'color', 'orders'));
 
         return response()->json($status);
     }
@@ -43,7 +45,7 @@ class StatusController extends Controller
         }
 
         $status = Status::findOrFail($id);
-        $status->update($request->only('name', 'color'));
+        $status->update($request->only('name', 'color', 'orders'));
 
         return response()->json($status);
     }
@@ -62,5 +64,33 @@ class StatusController extends Controller
         Status::findOrFail($id)->delete();
 
         return response()->json(['message' => 'Deleted']);
+    }
+
+    public function rearrange(Request $request)
+    {
+        $user = $request->user();
+
+        // ❌ Admin only
+        if ($user instanceof SalesTeam) {
+            return response()->json([
+                'message' => 'Unauthorized (Admin only)'
+            ], 403);
+        }
+
+        $request->validate([
+            'statuses' => 'required|array',
+            'statuses.*.id' => 'required|exists:statuses,id',
+            'statuses.*.orders' => 'required|integer',
+        ]);
+
+        foreach ($request->statuses as $item) {
+            Status::where('id', $item['id'])->update([
+                'orders' => $item['orders']
+            ]);
+        }
+
+        return response()->json([
+            'message' => 'Status order updated successfully'
+        ]);
     }
 }

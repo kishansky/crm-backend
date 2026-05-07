@@ -38,6 +38,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
         // Status Management (Admin Only)
         Route::apiResource('statuses', StatusController::class)->except(['index']);
+        Route::post('/statuses/rearrange', [StatusController::class, 'rearrange']);
 
         // 📍 Places Management (Admin Only)
         Route::apiResource('places', PlaceController::class);

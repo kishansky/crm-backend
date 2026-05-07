@@ -6,7 +6,7 @@ use Illuminate\Database\Eloquent\Model;
 
 class Status extends Model
 {
-    protected $fillable = ['name', 'color', 'is_active'];
+    protected $fillable = ['name', 'color', 'is_active','orders'];
 
     public function histories()
     {
